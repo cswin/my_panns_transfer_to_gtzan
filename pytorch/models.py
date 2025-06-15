@@ -190,6 +190,60 @@ class Transfer_Cnn14(nn.Module):
         return output_dict
 
 
+class FeatureTransfer_Cnn14(Transfer_Cnn14):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, classes_num, freeze_base):
+        """Classifier for a new task using pretrained Cnn14 as a sub module,
+        but takes pre-computed features as input instead of waveform.
+        """
+        super(FeatureTransfer_Cnn14, self).__init__(sample_rate, window_size, 
+            hop_size, mel_bins, fmin, fmax, classes_num, freeze_base)
+
+    def forward(self, input, mixup_lambda=None):
+        """Input: (batch_size, time_steps, mel_bins)
+        """
+        # Skip spectrogram extraction since input is already features
+        x = input.unsqueeze(1)  # Add channel dimension: (batch_size, 1, time_steps, mel_bins)
+        
+        x = x.transpose(1, 3)
+        x = self.base.bn0(x)
+        x = x.transpose(1, 3)
+        
+        if self.training:
+            x = self.base.spec_augmenter(x)
+
+        # Mixup on spectrogram
+        if self.training and mixup_lambda is not None:
+            x = do_mixup(x, mixup_lambda)
+
+        x = self.base.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block2(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block3(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block4(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block5(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block6(x, pool_size=(1, 1), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+
+        x = torch.mean(x, dim=3)
+        
+        (x1, _) = torch.max(x, dim=2)
+        x2 = torch.mean(x, dim=2)
+        x = x1 + x2
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu_(self.base.fc1(x))
+        embedding = F.dropout(x, p=0.5, training=self.training)
+
+        clipwise_output = torch.log_softmax(self.fc_transfer(embedding), dim=-1)
+        output_dict = {'clipwise_output': clipwise_output, 'embedding': embedding}
+ 
+        return output_dict
+
+
 class Cnn6(nn.Module):
     def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
         fmax, classes_num):
@@ -217,7 +271,8 @@ class Cnn6(nn.Module):
         self.spec_augmenter = SpecAugmentation(time_drop_width=64, time_stripes_num=2, 
             freq_drop_width=8, freq_stripes_num=2)
 
-        self.bn0 = nn.BatchNorm2d(64)
+        # Use mel_bins for batch normalization size
+        self.bn0 = nn.BatchNorm2d(mel_bins)
 
         self.conv_block1 = ConvBlock(in_channels=1, out_channels=64)
         self.conv_block2 = ConvBlock(in_channels=64, out_channels=128)
@@ -312,7 +367,9 @@ class Transfer_Cnn6(nn.Module):
         for k, v in state_dict.items():
             if k.startswith('module.'):
                 k = k[7:]  # remove 'module.' prefix
-            new_state_dict[k] = v
+            # Skip loading the batch norm parameters since we've replaced it
+            if not k.startswith('bn0.'):
+                new_state_dict[k] = v
             
         self.base.load_state_dict(new_state_dict, strict=False)
         print("Pretrained model loaded with some missing keys (this is expected for transfer learning)")
@@ -325,5 +382,97 @@ class Transfer_Cnn6(nn.Module):
 
         clipwise_output = torch.log_softmax(self.fc_transfer(embedding), dim=-1)
         output_dict['clipwise_output'] = clipwise_output
+ 
+        return output_dict
+
+
+class FeatureTransfer_Cnn6(Transfer_Cnn6):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, classes_num, freeze_base):
+        """Classifier for a new task using pretrained Cnn6 as a sub module,
+        but takes pre-computed features as input instead of waveform.
+        """
+        super(FeatureTransfer_Cnn6, self).__init__(sample_rate, window_size, 
+            hop_size, mel_bins, fmin, fmax, classes_num, freeze_base)
+            
+        # Store mel_bins for later use
+        self.mel_bins = mel_bins
+        
+        # Replace the batch norm layer with correct dimensions
+        self._replace_batch_norm()
+        
+    def _replace_batch_norm(self):
+        """Replace the batch normalization layer with correct dimensions."""
+        # Create a new batch norm layer with the correct dimensions
+        self.base.bn0 = nn.BatchNorm2d(self.mel_bins)
+        
+        # Initialize the batch norm layer
+        init_bn(self.base.bn0)
+        
+        # Reset running statistics
+        self.base.bn0.running_mean = torch.zeros(self.mel_bins)
+        self.base.bn0.running_var = torch.ones(self.mel_bins)
+        self.base.bn0.num_batches_tracked = torch.tensor(0)
+        
+    def load_from_pretrain(self, pretrained_checkpoint_path):
+        checkpoint = torch.load(pretrained_checkpoint_path)
+        # Convert old model state dict to new model structure
+        if 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+            
+        # Remove 'module.' prefix if present (from DataParallel)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith('module.'):
+                k = k[7:]  # remove 'module.' prefix
+            # Skip loading ANY batch norm related parameters
+            if not k.startswith('bn0.'):
+                new_state_dict[k] = v
+            
+        self.base.load_state_dict(new_state_dict, strict=False)
+        print("Pretrained model loaded with some missing keys (this is expected for transfer learning)")
+        
+        # Re-replace the batch norm layer after loading pretrained weights
+        self._replace_batch_norm()
+        
+    def forward(self, input, mixup_lambda=None):
+        """Input: (batch_size, time_steps, mel_bins)
+        """
+        # Skip spectrogram extraction since input is already features
+        x = input.unsqueeze(1)  # Add channel dimension: (batch_size, 1, time_steps, mel_bins)
+        
+        x = x.transpose(1, 3)
+        x = self.base.bn0(x)
+        x = x.transpose(1, 3)
+        
+        if self.training:
+            x = self.base.spec_augmenter(x)
+
+        # Mixup on spectrogram
+        if self.training and mixup_lambda is not None:
+            x = do_mixup(x, mixup_lambda)
+
+        x = self.base.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block2(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block3(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block4(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+
+        x = torch.mean(x, dim=3)
+        
+        (x1, _) = torch.max(x, dim=2)
+        x2 = torch.mean(x, dim=2)
+        x = x1 + x2
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu_(self.base.fc1(x))
+        embedding = F.dropout(x, p=0.5, training=self.training)
+
+        clipwise_output = torch.log_softmax(self.fc_transfer(embedding), dim=-1)
+        output_dict = {'clipwise_output': clipwise_output, 'embedding': embedding}
  
         return output_dict

@@ -13,13 +13,14 @@ import torch.nn.functional as F
 import torch.optim as optim
  
 from config import (sample_rate, classes_num, mel_bins, fmin, fmax, window_size, 
-    hop_size, window, pad_mode, center, ref, amin, top_db)
+    hop_size, window, pad_mode, center, ref, amin, top_db, cnn14_config, cnn6_config)
 from losses import get_loss_func
 from pytorch_utils import move_data_to_device, do_mixup
 from utilities import (create_folder, get_filename, create_logging, StatisticsContainer, Mixup)
 from data_generator import GtzanDataset, TrainSampler, EvaluateSampler, collate_fn
-from models import Transfer_Cnn14, Transfer_Cnn6
-from evaluate import Evaluator
+from models import (FeatureTransfer_Cnn14, FeatureTransfer_Cnn6, 
+    Transfer_Cnn14, Transfer_Cnn6)
+from segment_evaluate import SegmentEvaluator
 
 
 def train(args):
@@ -40,16 +41,16 @@ def train(args):
     device = 'cuda' if (args.cuda and torch.cuda.is_available()) else 'cpu'
     filename = args.filename
     num_workers = 8
-    mini_data = args.mini_data if hasattr(args, 'mini_data') else True  # Default to True since features.py uses mini_data
+    mini_data = args.mini_data if hasattr(args, 'mini_data') else False  # Default to False for full dataset
 
     loss_func = get_loss_func(loss_type)
     pretrain = True if pretrained_checkpoint_path else False
     
-    # Use minidata_waveform.h5 if mini_data is True
+    # Use minidata_features.h5 if mini_data is True
     if mini_data:
-        hdf5_path = os.path.join(workspace, 'features', 'minidata_waveform.h5')
+        hdf5_path = os.path.join(workspace, 'features', 'minidata_features.h5')
     else:
-        hdf5_path = os.path.join(workspace, 'features', 'waveform.h5')
+        hdf5_path = os.path.join(workspace, 'features', 'features.h5')
 
     checkpoints_dir = os.path.join(workspace, 'checkpoints', filename, 
         'holdout_fold={}'.format(holdout_fold), model_type, 'pretrain={}'.format(pretrain), 
@@ -77,9 +78,23 @@ def train(args):
         logging.info('Using CPU. Set --cuda flag to use GPU.')
     
     # Model
-    Model = eval(model_type)
-    model = Model(sample_rate, window_size, hop_size, mel_bins, fmin, fmax, 
-        classes_num, freeze_base)
+    if args.model_type == 'Transfer_Cnn14':
+        config = cnn14_config
+        model = FeatureTransfer_Cnn14(sample_rate=sample_rate, 
+            window_size=config['window_size'], hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], fmin=config['fmin'], fmax=config['fmax'], 
+            classes_num=classes_num, freeze_base=True)
+    elif args.model_type == 'Transfer_Cnn6':
+        config = cnn6_config
+        model = FeatureTransfer_Cnn6(sample_rate=sample_rate, 
+            window_size=config['window_size'], hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], fmin=config['fmin'], fmax=config['fmax'], 
+            classes_num=classes_num, freeze_base=freeze_base)
+    else:
+        Model = eval(args.model_type)
+        model = Model(sample_rate=sample_rate, window_size=window_size, 
+            hop_size=hop_size, mel_bins=mel_bins, fmin=fmin, fmax=fmax, 
+            classes_num=classes_num, freeze_base=freeze_base)
 
     # Statistics
     statistics_container = StatisticsContainer(statistics_path)
@@ -101,6 +116,10 @@ def train(args):
     # Parallel
     print('GPU number: {}'.format(torch.cuda.device_count()))
     model = torch.nn.DataParallel(model)
+    
+    # Ensure batch norm replacement after DataParallel wrapping for FeatureTransfer models
+    if hasattr(model.module, '_replace_batch_norm'):
+        model.module._replace_batch_norm()
 
     dataset = GtzanDataset()
 
@@ -135,13 +154,16 @@ def train(args):
     if 'mixup' in augmentation:
         mixup_augmenter = Mixup(mixup_alpha=1.)
      
-    # Evaluator
-    evaluator = Evaluator(model=model)
+    # Use new SegmentEvaluator instead of regular Evaluator
+    evaluator = SegmentEvaluator(model=model)
     
     train_bgn_time = time.time()
     
-    # Train on mini batches
-    for batch_data_dict in train_loader:
+    # Train on mini batches - cycle through data loader indefinitely
+    import itertools
+    train_loader_cycle = itertools.cycle(train_loader)
+    
+    for batch_data_dict in train_loader_cycle:
 
         # import crash
         # asdf
@@ -156,8 +178,14 @@ def train(args):
 
                 train_fin_time = time.time()
 
+                # Use segment-based evaluation
                 statistics = evaluator.evaluate(validate_loader)
                 logging.info('Validate accuracy: {:.3f}'.format(statistics['accuracy']))
+                
+                # Log confusion matrix from segment-based evaluation
+                if 'confusion_matrix' in statistics:
+                    logging.info('Confusion matrix:')
+                    logging.info(statistics['confusion_matrix'])
 
                 statistics_container.append(iteration, statistics, 'validate')
                 statistics_container.dump()
@@ -184,29 +212,28 @@ def train(args):
             logging.info('Model saved to {}'.format(checkpoint_path))
         
         if 'mixup' in augmentation:
-            batch_data_dict['mixup_lambda'] = mixup_augmenter.get_lambda(len(batch_data_dict['waveform']))
+            batch_data_dict['mixup_lambda'] = mixup_augmenter.get_lambda(len(batch_data_dict['feature']))
         
         # Move data to GPU
         for key in batch_data_dict.keys():
-            batch_data_dict[key] = move_data_to_device(batch_data_dict[key], device)
+            if key != 'audio_name':  # Skip audio_name as it's a list of strings
+                batch_data_dict[key] = move_data_to_device(batch_data_dict[key], device)
         
         # Train
         model.train()
 
         if 'mixup' in augmentation:
-            batch_output_dict = model(batch_data_dict['waveform'], 
+            batch_output_dict = model(batch_data_dict['feature'], 
                 batch_data_dict['mixup_lambda'])
             """{'clipwise_output': (batch_size, classes_num), ...}"""
 
-            batch_target_dict = {'target': do_mixup(batch_data_dict['target'], 
-                batch_data_dict['mixup_lambda'])}
-            """{'target': (batch_size, classes_num)}"""
+            batch_target_dict = {
+                'target': do_mixup(batch_data_dict['target'], 
+                    batch_data_dict['mixup_lambda'])}
         else:
-            batch_output_dict = model(batch_data_dict['waveform'], None)
-            """{'clipwise_output': (batch_size, classes_num), ...}"""
-
-            batch_target_dict = {'target': batch_data_dict['target']}
-            """{'target': (batch_size, classes_num)}"""
+            batch_output_dict = model(batch_data_dict['feature'], None)
+            batch_target_dict = {
+                'target': batch_data_dict['target']}
 
         # loss
         loss = loss_func(batch_output_dict, batch_target_dict)

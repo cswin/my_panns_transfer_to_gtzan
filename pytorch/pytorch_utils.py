@@ -5,6 +5,11 @@ import torch.nn as nn
 
 
 def move_data_to_device(x, device):
+    # If x is already a tensor, just move it to the target device
+    if torch.is_tensor(x):
+        return x.to(device)
+    
+    # Convert numpy arrays to tensors
     if 'float' in str(x.dtype):
         x = torch.Tensor(x)
     elif 'int' in str(x.dtype):

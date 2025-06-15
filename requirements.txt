@@ -4,4 +4,9 @@ numpy>=1.24.0
 matplotlib>=3.7.0
 h5py>=3.8.0
 torchlibrosa>=0.0.9
-IPython>=8.12.0 
+IPython>=8.12.0
+pandas
+tqdm
+torchvision
+scikit-learn
+scipy 

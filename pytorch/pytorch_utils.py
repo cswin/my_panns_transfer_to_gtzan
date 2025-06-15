@@ -29,8 +29,18 @@ def do_mixup(x, mixup_lambda):
     Returns:
       out: (batch_size, ...)
     """
-    out = (x[0 :: 2].transpose(0, -1) * mixup_lambda[0 :: 2] + \
-        x[1 :: 2].transpose(0, -1) * mixup_lambda[1 :: 2]).transpose(0, -1)
+    # Ensure mixup_lambda is a tensor on the same device as x
+    if not torch.is_tensor(mixup_lambda):
+        mixup_lambda = torch.tensor(mixup_lambda, device=x.device, dtype=x.dtype)
+    else:
+        mixup_lambda = mixup_lambda.to(x.device)
+    
+    # Reshape mixup_lambda to match x dimensions for broadcasting
+    # x shape: (batch_size * 2, ...), we need to broadcast over all dimensions except batch
+    shape = [mixup_lambda.shape[0]] + [1] * (len(x.shape) - 1)
+    mixup_lambda = mixup_lambda.view(shape)
+    
+    out = x[0 :: 2] * mixup_lambda[0 :: 2] + x[1 :: 2] * mixup_lambda[1 :: 2]
     return out
     
 

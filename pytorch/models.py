@@ -430,7 +430,7 @@ class FeatureTransfer_Cnn6(Transfer_Cnn6):
             # Skip loading ANY batch norm related parameters
             if not k.startswith('bn0.'):
                 new_state_dict[k] = v
-            
+                
         self.base.load_state_dict(new_state_dict, strict=False)
         print("Pretrained model loaded with some missing keys (this is expected for transfer learning)")
         
@@ -706,4 +706,328 @@ class FeatureAffectiveCnn6(AffectiveCnn6):
             'visual_features': x1 + x2  # Features from visual system
         }
 
+        return output_dict
+
+
+class EmotionRegression_Cnn14(nn.Module):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, freeze_base=True):
+        """Regression model for valence and arousal prediction using pretrained Cnn14.
+        
+        Args:
+            sample_rate: int, sample rate of audio
+            window_size: int, window size for STFT
+            hop_size: int, hop size for STFT
+            mel_bins: int, number of mel bins
+            fmin: int, minimum frequency
+            fmax: int, maximum frequency
+            freeze_base: bool, whether to freeze the pretrained base model
+        """
+        super(EmotionRegression_Cnn14, self).__init__()
+        audioset_classes_num = 527
+        
+        # Use pretrained Cnn14 as base
+        self.base = Cnn14(sample_rate, window_size, hop_size, mel_bins, fmin, 
+            fmax, audioset_classes_num)
+
+        # Regression heads for valence and arousal
+        self.fc_valence = nn.Linear(2048, 1, bias=True)
+        self.fc_arousal = nn.Linear(2048, 1, bias=True)
+
+        if freeze_base:
+            # Freeze AudioSet pretrained layers
+            for param in self.base.parameters():
+                param.requires_grad = False
+
+        self.init_weights()
+
+    def init_weights(self):
+        init_layer(self.fc_valence)
+        init_layer(self.fc_arousal)
+
+    def load_from_pretrain(self, pretrained_checkpoint_path):
+        """Load pretrained weights from AudioSet checkpoint."""
+        checkpoint = torch.load(pretrained_checkpoint_path)
+        self.base.load_state_dict(checkpoint['model'])
+
+    def forward(self, input, mixup_lambda=None):
+        """Forward pass.
+        
+        Args:
+            input: (batch_size, data_length), raw audio waveform
+            mixup_lambda: float, mixup parameter
+            
+        Returns:
+            output_dict: dict containing:
+                'valence': (batch_size, 1), predicted valence values
+                'arousal': (batch_size, 1), predicted arousal values
+                'embedding': (batch_size, 2048), feature embeddings
+        """
+        output_dict = self.base(input, mixup_lambda)
+        embedding = output_dict['embedding']
+
+        # Predict valence and arousal (no activation function for regression)
+        valence = self.fc_valence(embedding)
+        arousal = self.fc_arousal(embedding)
+        
+        output_dict = {
+            'valence': valence,
+            'arousal': arousal,
+            'embedding': embedding
+        }
+ 
+        return output_dict
+
+
+class FeatureEmotionRegression_Cnn14(EmotionRegression_Cnn14):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, freeze_base=True):
+        """Feature-based regression model for valence and arousal prediction.
+        
+        Takes pre-computed mel-spectrogram features as input instead of raw waveform.
+        """
+        super(FeatureEmotionRegression_Cnn14, self).__init__(sample_rate, window_size, 
+            hop_size, mel_bins, fmin, fmax, freeze_base)
+        
+        # Replace batch normalization for feature input
+        self._replace_batch_norm()
+
+    def _replace_batch_norm(self):
+        """Replace batch normalization for feature input."""
+        # Create a new batch norm layer with the correct number of channels
+        self.base.bn0 = nn.BatchNorm2d(self.base.bn0.num_features)
+        init_bn(self.base.bn0)
+
+    def load_from_pretrain(self, pretrained_checkpoint_path):
+        """Load pretrained weights, excluding spectrogram/logmel extractors."""
+        checkpoint = torch.load(pretrained_checkpoint_path)
+        pretrained_dict = checkpoint['model']
+        
+        # Remove spectrogram and logmel extractor weights
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() 
+                          if not k.startswith('spectrogram_extractor') 
+                          and not k.startswith('logmel_extractor')}
+        
+        # Load remaining weights
+        model_dict = self.base.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        self.base.load_state_dict(model_dict)
+
+    def forward(self, input, mixup_lambda=None):
+        """Forward pass with pre-computed features.
+        
+        Args:
+            input: (batch_size, time_steps, mel_bins), pre-computed mel-spectrogram
+            mixup_lambda: float, mixup parameter
+            
+        Returns:
+            output_dict: dict containing valence, arousal, and embedding
+        """
+        # Input is already mel-spectrogram features
+        x = input
+        x = x.transpose(1, 3)  # (batch_size, mel_bins, time_steps, 1)
+        x = self.base.bn0(x)
+        x = x.transpose(1, 3)  # (batch_size, 1, time_steps, mel_bins)
+        
+        if self.training:
+            x = self.base.spec_augmenter(x)
+
+        # Mixup on spectrogram
+        if self.training and mixup_lambda is not None:
+            x = do_mixup(x, mixup_lambda)
+
+        # Forward through convolutional blocks
+        x = self.base.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block2(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block3(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block4(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block5(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block6(x, pool_size=(1, 1), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = torch.mean(x, dim=3)
+        
+        # Global pooling
+        (x1, _) = torch.max(x, dim=2)
+        x2 = torch.mean(x, dim=2)
+        x = x1 + x2
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu_(self.base.fc1(x))
+        embedding = F.dropout(x, p=0.5, training=self.training)
+        
+        # Predict valence and arousal
+        valence = self.fc_valence(embedding)
+        arousal = self.fc_arousal(embedding)
+        
+        output_dict = {
+            'valence': valence,
+            'arousal': arousal,
+            'embedding': embedding
+        }
+        
+        return output_dict
+
+
+class EmotionRegression_Cnn6(nn.Module):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, freeze_base=True):
+        """Regression model for valence and arousal prediction using pretrained Cnn6.
+        
+        Args:
+            sample_rate: int, sample rate of audio
+            window_size: int, window size for STFT
+            hop_size: int, hop size for STFT
+            mel_bins: int, number of mel bins
+            fmin: int, minimum frequency
+            fmax: int, maximum frequency
+            freeze_base: bool, whether to freeze the pretrained base model
+        """
+        super(EmotionRegression_Cnn6, self).__init__()
+        audioset_classes_num = 527
+        
+        # Use pretrained Cnn6 as base
+        self.base = Cnn6(sample_rate, window_size, hop_size, mel_bins, fmin, 
+            fmax, audioset_classes_num)
+
+        # Regression heads for valence and arousal
+        self.fc_valence = nn.Linear(512, 1, bias=True)
+        self.fc_arousal = nn.Linear(512, 1, bias=True)
+
+        if freeze_base:
+            # Freeze AudioSet pretrained layers
+            for param in self.base.parameters():
+                param.requires_grad = False
+
+        self.init_weights()
+
+    def init_weights(self):
+        init_layer(self.fc_valence)
+        init_layer(self.fc_arousal)
+
+    def load_from_pretrain(self, pretrained_checkpoint_path):
+        """Load pretrained weights from AudioSet checkpoint."""
+        checkpoint = torch.load(pretrained_checkpoint_path)
+        self.base.load_state_dict(checkpoint['model'])
+
+    def forward(self, input, mixup_lambda=None):
+        """Forward pass.
+        
+        Args:
+            input: (batch_size, data_length), raw audio waveform
+            mixup_lambda: float, mixup parameter
+            
+        Returns:
+            output_dict: dict containing:
+                'valence': (batch_size, 1), predicted valence values
+                'arousal': (batch_size, 1), predicted arousal values
+                'embedding': (batch_size, 512), feature embeddings
+        """
+        output_dict = self.base(input, mixup_lambda)
+        embedding = output_dict['embedding']
+
+        # Predict valence and arousal (no activation function for regression)
+        valence = self.fc_valence(embedding)
+        arousal = self.fc_arousal(embedding)
+        
+        output_dict = {
+            'valence': valence,
+            'arousal': arousal,
+            'embedding': embedding
+        }
+ 
+        return output_dict
+
+
+class FeatureEmotionRegression_Cnn6(EmotionRegression_Cnn6):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, freeze_base=True):
+        """Feature-based regression model for valence and arousal prediction using Cnn6.
+        
+        Takes pre-computed mel-spectrogram features as input instead of raw waveform.
+        """
+        super(FeatureEmotionRegression_Cnn6, self).__init__(sample_rate, window_size, 
+            hop_size, mel_bins, fmin, fmax, freeze_base)
+        
+        # Replace batch normalization for feature input
+        self._replace_batch_norm()
+
+    def _replace_batch_norm(self):
+        """Replace batch normalization for feature input."""
+        # Create a new batch norm layer with the correct number of channels
+        self.base.bn0 = nn.BatchNorm2d(self.base.bn0.num_features)
+        init_bn(self.base.bn0)
+
+    def load_from_pretrain(self, pretrained_checkpoint_path):
+        """Load pretrained weights, excluding spectrogram/logmel extractors."""
+        checkpoint = torch.load(pretrained_checkpoint_path)
+        pretrained_dict = checkpoint['model']
+        
+        # Remove spectrogram and logmel extractor weights
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() 
+                          if not k.startswith('spectrogram_extractor') 
+                          and not k.startswith('logmel_extractor')}
+        
+        # Load remaining weights
+        model_dict = self.base.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        self.base.load_state_dict(model_dict)
+
+    def forward(self, input, mixup_lambda=None):
+        """Forward pass with pre-computed features.
+        
+        Args:
+            input: (batch_size, time_steps, mel_bins), pre-computed mel-spectrogram
+            mixup_lambda: float, mixup parameter
+            
+        Returns:
+            output_dict: dict containing valence, arousal, and embedding
+        """
+        # Input is already mel-spectrogram features
+        x = input
+        x = x.transpose(1, 3)  # (batch_size, mel_bins, time_steps, 1)
+        x = self.base.bn0(x)
+        x = x.transpose(1, 3)  # (batch_size, 1, time_steps, mel_bins)
+        
+        if self.training:
+            x = self.base.spec_augmenter(x)
+
+        # Mixup on spectrogram
+        if self.training and mixup_lambda is not None:
+            x = do_mixup(x, mixup_lambda)
+
+        # Forward through convolutional blocks (Cnn6 has 6 conv blocks)
+        x = self.base.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block2(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block3(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.base.conv_block4(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = torch.mean(x, dim=3)
+        
+        # Global pooling
+        (x1, _) = torch.max(x, dim=2)
+        x2 = torch.mean(x, dim=2)
+        x = x1 + x2
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu_(self.base.fc1(x))
+        embedding = F.dropout(x, p=0.5, training=self.training)
+        
+        # Predict valence and arousal
+        valence = self.fc_valence(embedding)
+        arousal = self.fc_arousal(embedding)
+        
+        output_dict = {
+            'valence': valence,
+            'arousal': arousal,
+            'embedding': embedding
+        }
+        
         return output_dict

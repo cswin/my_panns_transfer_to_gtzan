@@ -19,7 +19,7 @@ from pytorch_utils import move_data_to_device, do_mixup
 from utilities import (create_folder, get_filename, create_logging, StatisticsContainer, Mixup)
 from data_generator import GtzanDataset, TrainSampler, EvaluateSampler, collate_fn
 from models import (FeatureTransfer_Cnn14, FeatureTransfer_Cnn6, 
-    Transfer_Cnn14, Transfer_Cnn6)
+    Transfer_Cnn14, Transfer_Cnn6, AffectiveCnn6, FeatureAffectiveCnn6)
 from segment_evaluate import SegmentEvaluator
 
 
@@ -90,6 +90,18 @@ def train(args):
             window_size=config['window_size'], hop_size=config['hop_size'], 
             mel_bins=config['mel_bins'], fmin=config['fmin'], fmax=config['fmax'], 
             classes_num=classes_num, freeze_base=freeze_base)
+    elif args.model_type == 'AffectiveCnn6':
+        config = cnn6_config
+        model = AffectiveCnn6(sample_rate=sample_rate, 
+            window_size=config['window_size'], hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], fmin=config['fmin'], fmax=config['fmax'], 
+            classes_num=classes_num, freeze_visual_system=freeze_base)
+    elif args.model_type == 'FeatureAffectiveCnn6':
+        config = cnn6_config
+        model = FeatureAffectiveCnn6(sample_rate=sample_rate, 
+            window_size=config['window_size'], hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], fmin=config['fmin'], fmax=config['fmax'], 
+            classes_num=classes_num, freeze_visual_system=freeze_base)
     else:
         Model = eval(args.model_type)
         model = Model(sample_rate=sample_rate, window_size=window_size, 
@@ -101,7 +113,12 @@ def train(args):
 
     if pretrain:
         logging.info('Load pretrained model from {}'.format(pretrained_checkpoint_path))
-        model.load_from_pretrain(pretrained_checkpoint_path)
+        if args.model_type in ['AffectiveCnn6', 'FeatureAffectiveCnn6']:
+            # For affective models, load pretrained weights into visual system
+            model.load_visual_pretrain(pretrained_checkpoint_path)
+        else:
+            # For other models, use standard loading
+            model.load_from_pretrain(pretrained_checkpoint_path)
 
     if resume_iteration:
         resume_checkpoint_path = os.path.join(checkpoints_dir, '{}_iterations.pth'.format(resume_iteration))

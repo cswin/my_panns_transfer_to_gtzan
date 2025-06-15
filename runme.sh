@@ -10,7 +10,7 @@ WORKSPACE="/home/pengliu/Private/panns_transfer_to_gtzan/"
 
 # Model configuration - Transfer Learning with Pretrained PANNs
 PRETRAINED_CHECKPOINT_PATH="/home/pengliu/Private/my_panns_transfer_to_gtzan/pretrained_model/Cnn6_mAP=0.343.pth"
-MODEL_TYPE="Transfer_Cnn6"
+MODEL_TYPE="FeatureAffectiveCnn6"
 HOLDOUT_FOLD=1
 
 # Training hyperparameters
@@ -26,7 +26,7 @@ GPU_ID=3  # Set to desired GPU ID
 
 echo "=== GTZAN Music Genre Classification with Transfer Learning ==="
 echo "Dataset: 1000 audio files (700 train / 300 validation)"
-echo "Model: CNN6 with AudioSet pretrained features"
+echo "Model: AffectiveCnn6 with frozen visual system + 3-layer affective system"
 echo "Evaluation: Audio-file-level (no data leakage)"
 echo "----------------------------------------"
 

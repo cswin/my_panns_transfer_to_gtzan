@@ -476,3 +476,234 @@ class FeatureTransfer_Cnn6(Transfer_Cnn6):
         output_dict = {'clipwise_output': clipwise_output, 'embedding': embedding}
  
         return output_dict
+
+
+class AffectiveCnn6(nn.Module):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, classes_num, freeze_visual_system=True):
+        """
+        AffectiveCnn6: A model that uses Cnn6's convolutional layers as a frozen visual system
+        and adds 3 fully connected layers as a trainable affective (emotion) system.
+        
+        Args:
+            freeze_visual_system: If True, freezes the convolutional layers (visual system)
+        """
+        super(AffectiveCnn6, self).__init__()
+        
+        # Create the base Cnn6 model (will be used for visual system)
+        audioset_classes_num = 527  # Original AudioSet classes
+        self.visual_system = Cnn6(sample_rate, window_size, hop_size, mel_bins, fmin, 
+                                 fmax, audioset_classes_num)
+        
+        # Remove the original classification layers from visual system
+        # We'll keep everything up to the embedding layer
+        
+        # Define the 3-layer affective system
+        # Input dimension is 512 (from conv layers after pooling)
+        self.affective_fc1 = nn.Linear(512, 256, bias=True)
+        self.affective_fc2 = nn.Linear(256, 128, bias=True)
+        self.affective_fc3 = nn.Linear(128, classes_num, bias=True)
+        
+        # Dropout layers for the affective system
+        self.dropout1 = nn.Dropout(p=0.3)
+        self.dropout2 = nn.Dropout(p=0.3)
+        self.dropout3 = nn.Dropout(p=0.5)
+        
+        if freeze_visual_system:
+            # Freeze all parameters in the visual system (convolutional layers)
+            for param in self.visual_system.parameters():
+                param.requires_grad = False
+            print("Visual system (convolutional layers) frozen - only affective system will be trained")
+        
+        self.init_affective_weights()
+    
+    def init_affective_weights(self):
+        """Initialize weights for the affective system layers"""
+        init_layer(self.affective_fc1)
+        init_layer(self.affective_fc2)
+        init_layer(self.affective_fc3)
+    
+    def load_visual_pretrain(self, pretrained_checkpoint_path):
+        """Load pretrained weights for the visual system (Cnn6 layers)"""
+        checkpoint = torch.load(pretrained_checkpoint_path)
+        if 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+            
+        # Remove 'module.' prefix if present (from DataParallel)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith('module.'):
+                k = k[7:]  # remove 'module.' prefix
+            new_state_dict[k] = v
+            
+        self.visual_system.load_state_dict(new_state_dict, strict=False)
+        print("Pretrained visual system loaded")
+    
+    def forward(self, input, mixup_lambda=None):
+        """
+        Forward pass through visual system (frozen) and affective system (trainable)
+        Input: (batch_size, data_length) for raw audio or (batch_size, time_steps, mel_bins) for features
+        """
+        # Extract features using the visual system (convolutional layers)
+        # We'll manually run through the visual system layers to get the embedding
+        
+        # Spectrogram and mel extraction
+        x = self.visual_system.spectrogram_extractor(input)   # (batch_size, 1, time_steps, freq_bins)
+        x = self.visual_system.logmel_extractor(x)    # (batch_size, 1, time_steps, mel_bins)
+        
+        x = x.transpose(1, 3)
+        x = self.visual_system.bn0(x)
+        x = x.transpose(1, 3)
+        
+        if self.training:
+            x = self.visual_system.spec_augmenter(x)
+
+        # Mixup on spectrogram
+        if self.training and mixup_lambda is not None:
+            x = do_mixup(x, mixup_lambda)
+
+        # Pass through convolutional blocks (visual system - frozen)
+        x = self.visual_system.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.visual_system.conv_block2(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.visual_system.conv_block3(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.visual_system.conv_block4(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+
+        # Global pooling
+        x = torch.mean(x, dim=3)
+        (x1, _) = torch.max(x, dim=2)
+        x2 = torch.mean(x, dim=2)
+        x = x1 + x2
+        
+        # Now pass through the affective system (3 FC layers - trainable)
+        x = self.dropout1(x)
+        x = F.relu(self.affective_fc1(x))
+        
+        x = self.dropout2(x)
+        x = F.relu(self.affective_fc2(x))
+        
+        x = self.dropout3(x)
+        affective_embedding = x.clone()  # Save embedding before final layer
+        
+        clipwise_output = torch.log_softmax(self.affective_fc3(x), dim=-1)
+        
+        output_dict = {
+            'clipwise_output': clipwise_output, 
+            'embedding': affective_embedding,
+            'visual_features': x1 + x2  # Features from visual system
+        }
+
+        return output_dict
+
+
+class FeatureAffectiveCnn6(AffectiveCnn6):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, classes_num, freeze_visual_system=True):
+        """
+        FeatureAffectiveCnn6: Similar to AffectiveCnn6 but takes pre-computed features as input
+        instead of raw waveform.
+        """
+        super(FeatureAffectiveCnn6, self).__init__(sample_rate, window_size, 
+            hop_size, mel_bins, fmin, fmax, classes_num, freeze_visual_system)
+            
+        # Store mel_bins for later use
+        self.mel_bins = mel_bins
+        
+        # Replace the batch norm layer with correct dimensions
+        self._replace_batch_norm()
+        
+    def _replace_batch_norm(self):
+        """Replace the batch normalization layer with correct dimensions."""
+        # Create a new batch norm layer with the correct dimensions
+        self.visual_system.bn0 = nn.BatchNorm2d(self.mel_bins)
+        
+        # Initialize the batch norm layer
+        init_bn(self.visual_system.bn0)
+        
+        # Reset running statistics
+        self.visual_system.bn0.running_mean = torch.zeros(self.mel_bins)
+        self.visual_system.bn0.running_var = torch.ones(self.mel_bins)
+        self.visual_system.bn0.num_batches_tracked = torch.tensor(0)
+        
+    def load_visual_pretrain(self, pretrained_checkpoint_path):
+        """Load pretrained weights for the visual system, handling batch norm replacement"""
+        checkpoint = torch.load(pretrained_checkpoint_path)
+        if 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+            
+        # Remove 'module.' prefix if present (from DataParallel)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith('module.'):
+                k = k[7:]  # remove 'module.' prefix
+            # Skip loading ANY batch norm related parameters
+            if not k.startswith('bn0.'):
+                new_state_dict[k] = v
+                
+        self.visual_system.load_state_dict(new_state_dict, strict=False)
+        print("Pretrained visual system loaded with batch norm replacement")
+        
+        # Re-replace the batch norm layer after loading pretrained weights
+        self._replace_batch_norm()
+    
+    def forward(self, input, mixup_lambda=None):
+        """
+        Forward pass for pre-computed features
+        Input: (batch_size, time_steps, mel_bins)
+        """
+        # Skip spectrogram extraction since input is already features
+        x = input.unsqueeze(1)  # Add channel dimension: (batch_size, 1, time_steps, mel_bins)
+        
+        x = x.transpose(1, 3)
+        x = self.visual_system.bn0(x)
+        x = x.transpose(1, 3)
+        
+        if self.training:
+            x = self.visual_system.spec_augmenter(x)
+
+        # Mixup on spectrogram
+        if self.training and mixup_lambda is not None:
+            x = do_mixup(x, mixup_lambda)
+
+        # Pass through convolutional blocks (visual system - frozen)
+        x = self.visual_system.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.visual_system.conv_block2(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.visual_system.conv_block3(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.visual_system.conv_block4(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+
+        # Global pooling
+        x = torch.mean(x, dim=3)
+        (x1, _) = torch.max(x, dim=2)
+        x2 = torch.mean(x, dim=2)
+        x = x1 + x2
+        
+        # Now pass through the affective system (3 FC layers - trainable)
+        x = self.dropout1(x)
+        x = F.relu(self.affective_fc1(x))
+        
+        x = self.dropout2(x)
+        x = F.relu(self.affective_fc2(x))
+        
+        x = self.dropout3(x)
+        affective_embedding = x.clone()  # Save embedding before final layer
+        
+        clipwise_output = torch.log_softmax(self.affective_fc3(x), dim=-1)
+        
+        output_dict = {
+            'clipwise_output': clipwise_output, 
+            'embedding': affective_embedding,
+            'visual_features': x1 + x2  # Features from visual system
+        }
+
+        return output_dict

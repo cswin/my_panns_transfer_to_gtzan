@@ -18,7 +18,7 @@ from losses import get_loss_func
 from pytorch_utils import move_data_to_device, do_mixup
 from utilities import (create_folder, get_filename, create_logging, StatisticsContainer, Mixup)
 from data_generator import GtzanDataset, TrainSampler, EvaluateSampler, collate_fn
-from models import Transfer_Cnn14
+from models import Transfer_Cnn14, Transfer_Cnn6
 from evaluate import Evaluator
 
 
@@ -40,11 +40,16 @@ def train(args):
     device = 'cuda' if (args.cuda and torch.cuda.is_available()) else 'cpu'
     filename = args.filename
     num_workers = 8
+    mini_data = args.mini_data if hasattr(args, 'mini_data') else True  # Default to True since features.py uses mini_data
 
     loss_func = get_loss_func(loss_type)
     pretrain = True if pretrained_checkpoint_path else False
     
-    hdf5_path = os.path.join(workspace, 'features', 'waveform.h5')
+    # Use minidata_waveform.h5 if mini_data is True
+    if mini_data:
+        hdf5_path = os.path.join(workspace, 'features', 'minidata_waveform.h5')
+    else:
+        hdf5_path = os.path.join(workspace, 'features', 'waveform.h5')
 
     checkpoints_dir = os.path.join(workspace, 'checkpoints', filename, 
         'holdout_fold={}'.format(holdout_fold), model_type, 'pretrain={}'.format(pretrain), 
@@ -238,6 +243,7 @@ if __name__ == '__main__':
     parser_train.add_argument('--resume_iteration', type=int)
     parser_train.add_argument('--stop_iteration', type=int, required=True)
     parser_train.add_argument('--cuda', action='store_true', default=False)
+    parser_train.add_argument('--mini_data', action='store_true', default=False)
 
     # Parse arguments
     args = parser.parse_args()

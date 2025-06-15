@@ -29,31 +29,22 @@ class ConvBlock(nn.Module):
         
         self.conv1 = nn.Conv2d(in_channels=in_channels, 
                               out_channels=out_channels,
-                              kernel_size=(3, 3), stride=(1, 1),
-                              padding=(1, 1), bias=False)
-                              
-        self.conv2 = nn.Conv2d(in_channels=out_channels, 
-                              out_channels=out_channels,
-                              kernel_size=(3, 3), stride=(1, 1),
-                              padding=(1, 1), bias=False)
+                              kernel_size=(5, 5), stride=(1, 1),
+                              padding=(2, 2), bias=False)
                               
         self.bn1 = nn.BatchNorm2d(out_channels)
-        self.bn2 = nn.BatchNorm2d(out_channels)
 
         self.init_weight()
         
     def init_weight(self):
         init_layer(self.conv1)
-        init_layer(self.conv2)
         init_bn(self.bn1)
-        init_bn(self.bn2)
 
         
     def forward(self, input, pool_size=(2, 2), pool_type='avg'):
         
         x = input
         x = F.relu_(self.bn1(self.conv1(x)))
-        x = F.relu_(self.bn2(self.conv2(x)))
         if pool_type == 'max':
             x = F.max_pool2d(x, kernel_size=pool_size)
         elif pool_type == 'avg':
@@ -310,7 +301,21 @@ class Transfer_Cnn6(nn.Module):
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
         checkpoint = torch.load(pretrained_checkpoint_path)
-        self.base.load_state_dict(checkpoint['model'])
+        # Convert old model state dict to new model structure
+        if 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+            
+        # Remove 'module.' prefix if present (from DataParallel)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith('module.'):
+                k = k[7:]  # remove 'module.' prefix
+            new_state_dict[k] = v
+            
+        self.base.load_state_dict(new_state_dict, strict=False)
+        print("Pretrained model loaded with some missing keys (this is expected for transfer learning)")
 
     def forward(self, input, mixup_lambda=None):
         """Input: (batch_size, data_length)

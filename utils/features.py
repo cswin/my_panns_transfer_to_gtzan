@@ -51,8 +51,16 @@ def pack_audio_files_to_hdf5(args):
 
     (audio_names, audio_paths) = traverse_folder(audios_dir)
     
-    audio_names = sorted(audio_names)
-    audio_paths = sorted(audio_paths)
+    # Filter out non-audio files and empty names
+    valid_audio_names = []
+    valid_audio_paths = []
+    for name, path in zip(audio_names, audio_paths):
+        if name and name.split('.')[0] and name.split('.')[0] in lb_to_idx:
+            valid_audio_names.append(name)
+            valid_audio_paths.append(path)
+    
+    audio_names = sorted(valid_audio_names)
+    audio_paths = sorted(valid_audio_paths)
 
     meta_dict = {
         'audio_name': np.array(audio_names), 

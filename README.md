@@ -44,6 +44,41 @@ Or run the commands in runme.sh line by line. The commands includes:
 ## Model
 A 14-layer CNN of PANNs is fine-tuned. We use 10-fold cross validation for GTZAN classification. That is, 900 audio clips are used for training, and 100 audio clips are used for validation.
 
+## Feature Extraction Pipeline
+The core of this project involves converting raw audio into a format that a Convolutional Neural Network (CNN) can process effectively. This is done by transforming the 1D audio waveform into a 2D image-like representation called a Mel Spectrogram.
+
+```mermaid
+graph TD;
+    subgraph "Time Domain"
+        A("Waveform Data<br/>1D Array<br/>Amplitude vs. Time")
+    end
+
+    subgraph "Time-Frequency Domain"
+        B("Spectrogram<br/>2D Image<br/>Linear Frequency vs. Time")
+        C("Mel Spectrogram<br/>2D Image<br/>Mel Frequency vs. Time")
+    end
+    
+    A --"STFT<br/>(spectrogram_extractor)"--> B;
+    B --"Mel Filter Bank<br/>(logmel_extractor)"--> C;
+    C --"Input to CNN"--> D(CNN Model);
+```
+
+### 1. Waveform Data
+This is the most direct representation of audio, showing amplitude (sound pressure) over time. In this project, all audio is resampled to 32,000 Hz and truncated to 30-second clips.
+- **Domain**: Time
+- **Representation**: 1D array of amplitude values.
+
+### 2. Spectrogram
+To make frequency information visible, the waveform is converted into a spectrogram using a Short-Time Fourier Transform (STFT). This creates a 2D plot showing the intensity of different frequencies over time. This is why CNNs are effective—they can treat this representation as an image.
+- **Domain**: Time-Frequency
+- **Representation**: 2D matrix with a linear frequency scale.
+
+### 3. Mel Spectrogram
+This is a refinement of the spectrogram. The frequency axis is converted to the **Mel scale**, which mimics how humans perceive pitch. We are more sensitive to changes in low frequencies than high ones. This representation emphasizes the most relevant frequency information for tasks like music and speech recognition, often leading to better model performance. The models in this project use Log-Mel Spectrograms as their direct input.
+- **Domain**: Time-Frequency (Mel Scale)
+- **Representation**: 2D matrix adapted for human hearing.
+
+
 ## Results
 The system takes around 30 minutes to converge with a single card Tesla Tesla-V100 GPU card. Here is the result on 2nd fold. The results on different folds can be different.
 

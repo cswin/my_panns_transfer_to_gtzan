@@ -9,4 +9,5 @@ pandas
 tqdm
 torchvision
 scikit-learn
-scipy 
+scipy
+seaborn 

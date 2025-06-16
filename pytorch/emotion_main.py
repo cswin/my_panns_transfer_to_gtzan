@@ -361,12 +361,39 @@ def inference(args):
         dataset=dataset, batch_sampler=validate_sampler, 
         collate_fn=emotion_collate_fn, num_workers=8, pin_memory=True)
     
-    # Evaluate
+    # Evaluate with CSV saving
     evaluator = EmotionEvaluator(model=model)
-    statistics = evaluator.evaluate(validate_loader)
+    
+    # Create simple output directory for predictions (much cleaner!)
+    workspace_base = 'workspaces/emotion_regression'
+    output_dir = os.path.join(workspace_base, 'predictions')
+    
+    # Save predictions and get statistics
+    statistics, output_dict = evaluator.evaluate(validate_loader, save_predictions=True, output_dir=output_dir)
     
     # Print results
     evaluator.print_evaluation(statistics)
+    
+    # Generate visualizations
+    print("\nGenerating visualizations...")
+    try:
+        # Fix import path - add parent directory to sys.path to find emotion_visualize
+        import sys
+        parent_dir = os.path.join(os.path.dirname(__file__), '..')
+        sys.path.insert(0, os.path.abspath(parent_dir))
+        
+        from emotion_visualize import create_emotion_visualizations
+        create_emotion_visualizations(output_dir)
+        print(f"Visualizations saved in: {output_dir}")
+    except ImportError as e:
+        print(f"emotion_visualize module not found: {e}")
+        print("Install matplotlib and seaborn to generate plots.")
+        print("You can manually run: python generate_emotion_plots.py <output_dir>")
+    except Exception as e:
+        print(f"Error generating visualizations: {e}")
+        print("You can manually run: python generate_emotion_plots.py <output_dir>")
+    
+    return statistics, output_dict
 
 
 if __name__ == '__main__':

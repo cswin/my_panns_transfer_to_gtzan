@@ -3,6 +3,8 @@ import torch
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import time
+import pandas as pd
+import os
 
 
 class EmotionEvaluator(object):
@@ -14,22 +16,112 @@ class EmotionEvaluator(object):
         """
         self.model = model
         
-    def evaluate(self, data_loader):
+    def evaluate(self, data_loader, save_predictions=False, output_dir=None):
         """Evaluate the model and return emotion prediction metrics.
         
         Args:
             data_loader: torch data loader
+            save_predictions: bool, whether to save predictions to CSV files
+            output_dir: str, directory to save CSV files (required if save_predictions=True)
             
         Returns:
             statistics: dict of evaluation metrics
+            output_dict: dict containing all predictions and targets (if save_predictions=True)
         """
         # Generate predictions
         output_dict = self._forward(data_loader)
         
+        # Save predictions if requested
+        if save_predictions:
+            if output_dir is None:
+                raise ValueError("output_dir must be provided when save_predictions=True")
+            os.makedirs(output_dir, exist_ok=True)
+            self._save_predictions_to_csv(output_dict, output_dir)
+        
         # Calculate regression metrics
         statistics = self._calculate_metrics(output_dict)
         
-        return statistics
+        if save_predictions:
+            return statistics, output_dict
+        else:
+            return statistics
+    
+    def _save_predictions_to_csv(self, output_dict, output_dir):
+        """Save predictions and targets to CSV files.
+        
+        Args:
+            output_dict: dict containing predictions and targets
+            output_dir: directory to save CSV files
+        """
+        # Save segment-level predictions
+        segment_df = pd.DataFrame({
+            'audio_name': output_dict['audio_name'],
+            'valence_true': output_dict['valence_target'],
+            'valence_pred': output_dict['valence_pred'],
+            'arousal_true': output_dict['arousal_target'],
+            'arousal_pred': output_dict['arousal_pred']
+        })
+        
+        # Add segment index and base audio name
+        segment_df['base_audio'] = segment_df['audio_name'].apply(
+            lambda x: (x.decode() if isinstance(x, bytes) else x).split('_seg')[0] if '_seg' in (x.decode() if isinstance(x, bytes) else x) else (x.decode() if isinstance(x, bytes) else x)
+        )
+        segment_df['segment_idx'] = segment_df['audio_name'].apply(
+            lambda x: int((x.decode() if isinstance(x, bytes) else x).split('_seg')[1]) if '_seg' in (x.decode() if isinstance(x, bytes) else x) else 0
+        )
+        
+        segment_csv_path = os.path.join(output_dir, 'segment_predictions.csv')
+        segment_df.to_csv(segment_csv_path, index=False)
+        print(f"Segment-level predictions saved to: {segment_csv_path}")
+        
+        # Create audio-level aggregated predictions
+        audio_df = self._create_audio_level_dataframe(output_dict)
+        audio_csv_path = os.path.join(output_dir, 'audio_predictions.csv')
+        audio_df.to_csv(audio_csv_path, index=False)
+        print(f"Audio-level predictions saved to: {audio_csv_path}")
+        
+    def _create_audio_level_dataframe(self, output_dict):
+        """Create audio-level DataFrame by aggregating segment predictions.
+        
+        Args:
+            output_dict: dict containing predictions and targets
+            
+        Returns:
+            audio_df: DataFrame with audio-level predictions
+        """
+        def get_base_name(name):
+            name_str = name.decode() if isinstance(name, bytes) else name
+            return name_str.split('_seg')[0] if '_seg' in name_str else name_str
+        
+        # Group data by base audio name
+        audio_data = {}
+        for i, name in enumerate(output_dict['audio_name']):
+            base_name = get_base_name(name)
+            if base_name not in audio_data:
+                audio_data[base_name] = {
+                    'valence_pred': [],
+                    'arousal_pred': [],
+                    'valence_target': [],
+                    'arousal_target': []
+                }
+            audio_data[base_name]['valence_pred'].append(output_dict['valence_pred'][i])
+            audio_data[base_name]['arousal_pred'].append(output_dict['arousal_pred'][i])
+            audio_data[base_name]['valence_target'].append(output_dict['valence_target'][i])
+            audio_data[base_name]['arousal_target'].append(output_dict['arousal_target'][i])
+        
+        # Create DataFrame with aggregated predictions
+        audio_records = []
+        for base_name, data in audio_data.items():
+            audio_records.append({
+                'audio_name': base_name,
+                'valence_true': np.mean(data['valence_target']),  # Should be same for all segments
+                'valence_pred': np.mean(data['valence_pred']),
+                'arousal_true': np.mean(data['arousal_target']),  # Should be same for all segments
+                'arousal_pred': np.mean(data['arousal_pred']),
+                'num_segments': len(data['valence_pred'])
+            })
+        
+        return pd.DataFrame(audio_records)
     
     def _forward(self, data_loader):
         """Forward data to model and get predictions.

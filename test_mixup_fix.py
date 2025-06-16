@@ -5,8 +5,9 @@ import numpy as np
 import sys
 import os
 
-# Add pytorch directory to path
+# Add pytorch and utils directories to path
 sys.path.append('pytorch')
+sys.path.append('utils')
 
 from pytorch.pytorch_utils import do_mixup
 from utils.utilities import Mixup
@@ -16,9 +17,9 @@ def test_mixup_fix():
     
     print("Testing Mixup Fix...")
     
-    # Test parameters
+    # Test parameters - note: do_mixup expects batch_size*2 input, mixup.get_lambda expects batch_size
     batch_size = 4
-    feature_shape = (8, 64, 64)  # (batch_size * 2, time, mel_bins)
+    feature_shape = (batch_size * 2, 64, 64)  # (8, time, mel_bins) - input for do_mixup
     
     # Create test data
     x = torch.randn(feature_shape)
@@ -26,7 +27,8 @@ def test_mixup_fix():
     # Test with CPU tensors first
     print("Testing with CPU tensors...")
     mixup = Mixup(mixup_alpha=1.0)
-    mixup_lambda = mixup.get_lambda(batch_size)
+    # The mixup.get_lambda should return batch_size*2 values for the batch_size*2 input
+    mixup_lambda = mixup.get_lambda(batch_size * 2)
     
     try:
         result_cpu = do_mixup(x, mixup_lambda)

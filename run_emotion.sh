@@ -36,13 +36,36 @@ EMO_RATINGS_DIR="/DATA/pliu/EmotionData/Emo-Soundscapes/Emo-Soundscapes-Ratings"
 # Your workspace directory
 WORKSPACE="workspaces/emotion_regression"
 
-# Feature file location (update this if features are in a different location)
-FEATURE_FILE="features/emotion_features/emotion_features.h5"
+# Feature file location - will be determined based on extraction mode
+FEATURE_FILE=""
 
-# Check if we're using workspace-relative features
+# Set feature file path based on extraction mode
 if [ "$SKIP_EXTRACTION" = false ]; then
     # If extracting, features will be in workspace
     FEATURE_FILE="$WORKSPACE/features/emotion_features.h5"
+else
+    # If skipping extraction, look for existing features in common locations
+    # Try workspace location first (most likely)
+    if [ -f "$WORKSPACE/features/emotion_features.h5" ]; then
+        FEATURE_FILE="$WORKSPACE/features/emotion_features.h5"
+    # Try relative path as fallback
+    elif [ -f "features/emotion_features/emotion_features.h5" ]; then
+        FEATURE_FILE="features/emotion_features/emotion_features.h5"
+    # Try absolute path if provided by user (update this if features are elsewhere)
+    elif [ -f "/path/to/your/emotion_features.h5" ]; then
+        FEATURE_FILE="/path/to/your/emotion_features.h5"
+    else
+        echo "Error: No existing features found!"
+        echo "Searched in the following locations:"
+        echo "  - $WORKSPACE/features/emotion_features.h5"
+        echo "  - features/emotion_features/emotion_features.h5"
+        echo ""
+        echo "Solutions:"
+        echo "  1. Run without --skip-extraction to extract features"
+        echo "  2. Update the FEATURE_FILE path in this script to point to your existing features"
+        echo "  3. Copy your features to one of the expected locations"
+        exit 1
+    fi
 fi
 
 # Path to pretrained PANNs model (download from PANNs repository)
@@ -90,14 +113,6 @@ echo "Setup validation passed!"
 
 if [ "$SKIP_EXTRACTION" = true ]; then
     echo "Skipping feature extraction (--skip-extraction flag provided)"
-    
-    # Check if features already exist
-    if [ ! -f "$FEATURE_FILE" ]; then
-        echo "Error: No existing features found at $FEATURE_FILE"
-        echo "Either run without --skip-extraction or ensure features exist at the expected location"
-        exit 1
-    fi
-    
     echo "Using existing features at $FEATURE_FILE"
     echo "⚠️  WARNING: If you're using old features (not segmented), you may need to re-extract!"
     echo "   The updated system expects 6 segments per audio file (7278 total samples)"
@@ -189,7 +204,7 @@ echo "- Look for 'Audio Mean MAE' and 'Audio Mean Pearson' in logs for best indi
 # Evaluation
 # =============================================================================
 
-echo "Step 3: Evaluating trained model..."
+echo "Step 3: Evaluating trained model with CSV export and visualizations..."
 
 # Find the latest checkpoint
 LATEST_CHECKPOINT=$(find "$WORKSPACE/checkpoints" -name "*.pth" | sort -V | tail -n 1)
@@ -209,6 +224,25 @@ python pytorch/emotion_main.py inference \
     --cuda
 
 echo "Evaluation completed!"
+
+# Check if predictions were generated
+PREDICTIONS_DIR="$WORKSPACE/predictions"
+
+if [ -d "$PREDICTIONS_DIR" ]; then
+    echo ""
+    echo "=== Generated Files ==="
+    echo "Predictions saved in: $PREDICTIONS_DIR"
+    echo "- segment_predictions.csv: Segment-level predictions with time information"
+    echo "- audio_predictions.csv: Audio-level aggregated predictions"
+    echo "- plots/: Visualization plots including:"
+    echo "  - audio_scatter_plots.png: True vs predicted scatter plots (audio-level)"
+    echo "  - segment_scatter_plots.png: True vs predicted scatter plots (segment-level)"
+    echo "  - time_series_sample.png: Sample time-series plots"
+    echo "  - individual_timeseries/: Individual time-series for each audio file"
+    echo "  - summary_statistics.png: Error distributions and performance analysis"
+else
+    echo "Warning: Predictions directory not found. Visualizations may not have been generated."
+fi
 
 # =============================================================================
 # Usage Information

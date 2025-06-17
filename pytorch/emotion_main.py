@@ -24,8 +24,10 @@ from losses import get_loss_func
 from pytorch_utils import move_data_to_device, do_mixup
 from utilities import (create_folder, get_filename, create_logging, StatisticsContainer, Mixup)
 from data_generator import EmoSoundscapesDataset, EmotionTrainSampler, EmotionValidateSampler, emotion_collate_fn
-from models import FeatureEmotionRegression_Cnn14, EmotionRegression_Cnn14, FeatureEmotionRegression_Cnn6, EmotionRegression_Cnn6
+from models import FeatureEmotionRegression_Cnn14, EmotionRegression_Cnn14, FeatureEmotionRegression_Cnn6, EmotionRegression_Cnn6, FeatureEmotionRegression_Cnn6_NewAffective
+from models_lrm import FeatureEmotionRegression_Cnn6_LRM
 from emotion_evaluate import EmotionEvaluator
+from emotion_evaluate_lrm import LRMEmotionEvaluator
 
 
 def train(args):
@@ -116,6 +118,27 @@ def train(args):
             fmin=config['fmin'], 
             fmax=config['fmax'], 
             freeze_base=freeze_base)
+    elif args.model_type == 'FeatureEmotionRegression_Cnn6_NewAffective':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_NewAffective(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base)
+    elif args.model_type == 'FeatureEmotionRegression_Cnn6_LRM':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_LRM(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base,
+            forward_passes=getattr(args, 'forward_passes', 2))
     else:
         raise ValueError(f'Unknown model type: {args.model_type}')
 
@@ -180,8 +203,12 @@ def train(args):
     if 'mixup' in augmentation:
         mixup_augmenter = Mixup(mixup_alpha=1.)
      
-    # Evaluator
-    evaluator = EmotionEvaluator(model=model)
+    # Evaluator - use LRM evaluator for LRM models
+    if 'LRM' in args.model_type:
+        evaluator = LRMEmotionEvaluator(model=model)
+        logging.info('Using LRM evaluator for segment-based feedback processing')
+    else:
+        evaluator = EmotionEvaluator(model=model)
     
     train_bgn_time = time.time()
     
@@ -343,6 +370,27 @@ def inference(args):
             fmin=config['fmin'], 
             fmax=config['fmax'], 
             freeze_base=True)
+    elif args.model_type == 'FeatureEmotionRegression_Cnn6_NewAffective':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_NewAffective(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=True)
+    elif args.model_type == 'FeatureEmotionRegression_Cnn6_LRM':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_LRM(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=True,
+            forward_passes=getattr(args, 'forward_passes', 2))
     else:
         raise ValueError(f'Unknown model type: {args.model_type}')
     
@@ -361,11 +409,18 @@ def inference(args):
         dataset=dataset, batch_sampler=validate_sampler, 
         collate_fn=emotion_collate_fn, num_workers=8, pin_memory=True)
     
-    # Evaluate with CSV saving
-    evaluator = EmotionEvaluator(model=model)
+    # Evaluate with CSV saving - use LRM evaluator for LRM models
+    if 'LRM' in args.model_type:
+        evaluator = LRMEmotionEvaluator(model=model)
+        print('Using LRM evaluator for segment-based feedback processing')
+    else:
+        evaluator = EmotionEvaluator(model=model)
     
-    # Create simple output directory for predictions (much cleaner!)
-    workspace_base = 'workspaces/emotion_regression'
+    # Create output directory for predictions based on model type
+    if 'LRM' in args.model_type:
+        workspace_base = 'workspaces/emotion_feedback'  # LRM models use feedback workspace
+    else:
+        workspace_base = 'workspaces/emotion_regression'  # Baseline models use regression workspace
     output_dir = os.path.join(workspace_base, 'predictions')
     
     # Save predictions and get statistics
@@ -407,7 +462,7 @@ if __name__ == '__main__':
     parser_train.add_argument('--workspace', type=str, required=True, 
                               help='Directory of workspace')
     parser_train.add_argument('--model_type', type=str, required=True,
-                              choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6'])
+                              choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_NewAffective', 'FeatureEmotionRegression_Cnn6_LRM'])
     parser_train.add_argument('--pretrained_checkpoint_path', type=str,
                               help='Path to pretrained model checkpoint')
     parser_train.add_argument('--freeze_base', action='store_true', 
@@ -422,6 +477,8 @@ if __name__ == '__main__':
     parser_train.add_argument('--stop_iteration', type=int, default=10000)
     parser_train.add_argument('--cuda', action='store_true')
     parser_train.add_argument('--filename', type=str, default='emotion_main')
+    parser_train.add_argument('--forward_passes', type=int, default=2,
+                              help='Number of forward passes for feedback models')
 
     # Inference arguments
     parser_inference = subparsers.add_parser('inference')
@@ -430,9 +487,11 @@ if __name__ == '__main__':
     parser_inference.add_argument('--dataset_path', type=str, required=True,
                                   help='Path to emotion dataset HDF5 file')
     parser_inference.add_argument('--model_type', type=str, required=True,
-                                  choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6'])
+                                  choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_NewAffective', 'FeatureEmotionRegression_Cnn6_LRM'])
     parser_inference.add_argument('--batch_size', type=int, default=32)
     parser_inference.add_argument('--cuda', action='store_true')
+    parser_inference.add_argument('--forward_passes', type=int, default=2,
+                                  help='Number of forward passes for feedback models')
 
     args = parser.parse_args()
 

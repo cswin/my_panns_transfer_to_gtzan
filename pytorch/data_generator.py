@@ -343,7 +343,7 @@ class EmotionTrainSampler(object):
             yield batch_meta
 
     def __len__(self):
-        return -1
+        return (len(self.train_indices) + self.batch_size - 1) // self.batch_size
 
 
 class EmotionValidateSampler(object):
@@ -412,4 +412,4 @@ class EmotionValidateSampler(object):
             yield batch_meta
             
     def __len__(self):
-        return -1 
+        return (len(self.val_indices) + self.batch_size - 1) // self.batch_size

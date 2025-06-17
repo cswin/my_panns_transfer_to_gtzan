@@ -824,11 +824,14 @@ class FeatureEmotionRegression_Cnn14(EmotionRegression_Cnn14):
         Returns:
             output_dict: dict containing valence, arousal, and embedding
         """
-        # Input is already mel-spectrogram features
-        x = input
-        x = x.transpose(1, 3)  # (batch_size, mel_bins, time_steps, 1)
+        # Input is already mel-spectrogram features: (batch_size, time_steps, mel_bins)
+        # Add channel dimension to match CNN input format
+        x = input.unsqueeze(1)  # (batch_size, 1, time_steps, mel_bins)
+        
+        # Apply batch norm exactly like the original CNN
+        x = x.transpose(1, 3)   # (batch_size, mel_bins, time_steps, 1)
         x = self.base.bn0(x)
-        x = x.transpose(1, 3)  # (batch_size, 1, time_steps, mel_bins)
+        x = x.transpose(1, 3)   # (batch_size, 1, time_steps, mel_bins)
         
         if self.training:
             x = self.base.spec_augmenter(x)
@@ -988,11 +991,27 @@ class FeatureEmotionRegression_Cnn6(EmotionRegression_Cnn6):
         Returns:
             output_dict: dict containing valence, arousal, and embedding
         """
-        # Input is already mel-spectrogram features
-        x = input
-        x = x.transpose(1, 3)  # (batch_size, mel_bins, time_steps, 1)
+        # Handle DataParallel dimension issue and extra dimensions
+        if input.dim() == 5:
+            # DataParallel case: (num_gpus, batch_size, time_steps, mel_bins)
+            # Reshape to (batch_size * num_gpus, time_steps, mel_bins)
+            original_shape = input.shape
+            input = input.view(-1, original_shape[-2], original_shape[-1])
+        elif input.dim() == 4 and input.shape[1] == 1:
+            # Extra dimension case: (batch_size, 1, time_steps, mel_bins)
+            # Squeeze out the extra dimension
+            input = input.squeeze(1)  # (batch_size, time_steps, mel_bins)
+        elif input.dim() != 3:
+            raise ValueError(f"Expected 3D, 4D (with dim 1 = 1), or 5D input, got {input.dim()}D input with shape {input.shape}")
+        
+        # Input is already mel-spectrogram features: (batch_size, time_steps, mel_bins)
+        # Add channel dimension to match CNN input format
+        x = input.unsqueeze(1)  # (batch_size, 1, time_steps, mel_bins)
+        
+        # Apply batch norm exactly like the original CNN
+        x = x.transpose(1, 3)   # (batch_size, mel_bins, time_steps, 1)
         x = self.base.bn0(x)
-        x = x.transpose(1, 3)  # (batch_size, 1, time_steps, mel_bins)
+        x = x.transpose(1, 3)   # (batch_size, 1, time_steps, mel_bins)
         
         if self.training:
             x = self.base.spec_augmenter(x)
@@ -1031,3 +1050,112 @@ class FeatureEmotionRegression_Cnn6(EmotionRegression_Cnn6):
         }
         
         return output_dict
+
+
+class FeatureEmotionRegression_Cnn6_NewAffective(nn.Module):
+    """
+    Feature-based emotion regression with new affective system architecture.
+    
+    This model has the SAME structure as the LRM model but WITHOUT feedback connections.
+    It serves as a fair comparison baseline with:
+    - Visual System: Frozen CNN6 backbone (same as LRM)
+    - Affective System: New separate valence/arousal pathways (same as LRM)
+    - No Feedback: Pure feedforward processing (different from LRM)
+    
+    This allows fair comparison between:
+    - Old affective system (FeatureEmotionRegression_Cnn6) 
+    - New affective system without feedback (this model)
+    - New affective system with feedback (FeatureEmotionRegression_Cnn6_LRM)
+    """
+    
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+                 fmax, freeze_base=True):
+        """
+        Initialize new affective system emotion regression model.
+        
+        Args:
+            sample_rate: int, sample rate of audio
+            window_size: int, window size for STFT
+            hop_size: int, hop size for STFT  
+            mel_bins: int, number of mel bins
+            fmin: int, minimum frequency
+            fmax: int, maximum frequency
+            freeze_base: bool, whether to freeze the pretrained base model
+        """
+        super(FeatureEmotionRegression_Cnn6_NewAffective, self).__init__()
+        
+        # Visual system - same as LRM model
+        self.base_model = FeatureEmotionRegression_Cnn6(
+            sample_rate, window_size, hop_size, mel_bins, fmin, fmax, freeze_base
+        )
+        
+        # New affective system - same pathways as LRM model but no feedback
+        # Separate pathways for valence and arousal with rich representations
+        self.affective_valence = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+        
+        self.affective_arousal = nn.Sequential(
+            nn.Linear(512, 256), 
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+        
+        # Initialize the new affective pathways
+        for pathway in [self.affective_valence, self.affective_arousal]:
+            for layer in pathway:
+                if isinstance(layer, nn.Linear):
+                    init_layer(layer)
+    
+    def forward(self, input, mixup_lambda=None):
+        """
+        Forward pass - pure feedforward through visual + new affective systems.
+        
+        Args:
+            input: (batch_size, time_steps, mel_bins) pre-computed features
+            mixup_lambda: float, mixup parameter
+            
+        Returns:
+            output_dict: dict containing valence, arousal, and embedding
+        """
+        # Handle DataParallel dimension issue and extra dimensions
+        if input.dim() == 5:
+            # DataParallel case: (num_gpus, batch_size, time_steps, mel_bins)
+            # Reshape to (batch_size * num_gpus, time_steps, mel_bins)
+            original_shape = input.shape
+            input = input.view(-1, original_shape[-2], original_shape[-1])
+        elif input.dim() == 4 and input.shape[1] == 1:
+            # Extra dimension case: (batch_size, 1, time_steps, mel_bins)
+            # Squeeze out the extra dimension
+            input = input.squeeze(1)  # (batch_size, time_steps, mel_bins)
+        elif input.dim() != 3:
+            raise ValueError(f"Expected 3D, 4D (with dim 1 = 1), or 5D input, got {input.dim()}D input with shape {input.shape}")
+        
+        # Forward through visual system (frozen CNN6 backbone)
+        # This extracts the 512D embedding from conv features
+        visual_output = self.base_model(input, mixup_lambda)
+        embedding = visual_output['embedding']  # 512D visual embedding
+        
+        # Forward through new affective system (separate pathways)
+        valence = self.affective_valence(embedding)
+        arousal = self.affective_arousal(embedding)
+        
+        output_dict = {
+            'valence': valence,
+            'arousal': arousal,
+            'embedding': embedding  # Return visual embedding for compatibility
+        }
+        
+        return output_dict
+    
+    def load_from_pretrain(self, pretrained_checkpoint_path):
+        """Load pretrained weights for visual system."""
+        self.base_model.load_from_pretrain(pretrained_checkpoint_path)
+
+

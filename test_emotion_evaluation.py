@@ -20,7 +20,7 @@ def test_emotion_evaluation(feature_path):
     
     # Check if feature file exists
     if not os.path.exists(feature_path):
-        print(f"Error: Feature file {feature_path} not found!")
+        print(f"⚠️  Feature file {feature_path} not found (trying alternative locations)")
         return
     
     # Load feature file to check structure
@@ -123,6 +123,30 @@ def test_emotion_evaluation(feature_path):
         print(f"✗ Audio-level aggregation issue: {statistics['audio_num_samples']} audio files >= {statistics['segment_num_samples']} segments")
 
 if __name__ == '__main__':
-    # Test with the emotion features
-    feature_path = 'features/emotion_features/emotion_features.h5'
+    # Test with the emotion features - try multiple locations
+    possible_paths = [
+        'workspaces/emotion_regression/features/emotion_features.h5',
+        'workspaces/emotion_feedback/features/emotion_features.h5', 
+        'features/emotion_features/emotion_features.h5',
+        'emotion_features.h5'
+    ]
+    
+    feature_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            feature_path = path
+            print(f"✅ Found emotion features at: {path}")
+            break
+        else:
+            print(f"⚠️  Checking {path}... not found")
+    
+    if feature_path is None:
+        print("❌ No emotion features found in any expected location!")
+        print("Expected locations:")
+        for path in possible_paths:
+            print(f"  - {path}")
+        print("\nPlease run feature extraction first:")
+        print("  bash run_emotion.sh")
+        sys.exit(1)
+    
     test_emotion_evaluation(feature_path) 

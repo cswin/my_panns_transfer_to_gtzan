@@ -168,7 +168,7 @@ def test_checkpoint_operations(model):
         )
         
         # Load checkpoint
-        loaded_checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        loaded_checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         new_model.load_state_dict(loaded_checkpoint['model_state_dict'])
         print(f"✅ Checkpoint loaded successfully")
         

@@ -397,7 +397,7 @@ def run_full_training(args):
             # Load best model
             if args.save_model:
                 model_path = workspace / f'best_{args.model_type.lower()}.pth'
-                checkpoint = torch.load(model_path)
+                checkpoint = torch.load(model_path, weights_only=False)
                 model.load_state_dict(checkpoint['model_state_dict'])
                 print(f"Loaded best model from epoch {checkpoint['epoch']}")
             

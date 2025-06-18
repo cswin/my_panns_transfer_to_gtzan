@@ -160,10 +160,32 @@ else
 fi
 
 # =============================================================================
+# Training Configuration for 12GB GPU
+# =============================================================================
+
+# Updated configuration for epoch-based training
+BATCH_SIZE=48        # Optimal for 12GB GPU (3x faster than batch=16)
+EPOCHS=100           # More intuitive than iterations
+LEARNING_RATE=1e-4   # Standard learning rate
+
+# Calculate approximate iterations for 100 epochs
+# Assuming ~2000 training samples: 2000/48 ≈ 42 iterations/epoch
+# 100 epochs ≈ 4200 iterations (will auto-adjust based on actual dataset size)
+STOP_ITERATION=4200  # Conservative estimate for 100 epochs
+
+echo "🚀 Training Configuration:"
+echo "  - Batch Size: $BATCH_SIZE (optimized for 12GB GPU)"
+echo "  - Target Epochs: $EPOCHS"
+echo "  - Estimated Iterations: $STOP_ITERATION"
+echo "  - Learning Rate: $LEARNING_RATE"
+echo ""
+
+# =============================================================================
 # Training
 # =============================================================================
 
 echo "Step 2: Training emotion regression model (Cnn6 with New Affective System)..."
+echo "🎯 Training for $EPOCHS epochs with batch size $BATCH_SIZE"
 
 # Test mixup fix first
 echo "Testing mixup fix..."
@@ -185,9 +207,9 @@ python pytorch/emotion_main.py train \
     --freeze_base \
     --loss_type "mse" \
     --augmentation "$AUGMENTATION" \
-    --learning_rate 1e-4 \
-    --batch_size 16 \
-    --stop_iteration 5000 \
+    --learning_rate $LEARNING_RATE \
+    --batch_size $BATCH_SIZE \
+    --stop_iteration $STOP_ITERATION \
     --cuda
 
 echo "Training completed!"
@@ -195,6 +217,8 @@ echo "Training completed!"
 echo ""
 echo "=== Training Notes ==="
 echo "- Model: FeatureEmotionRegression_Cnn6_NewAffective"
+echo "- Epochs: $EPOCHS (approx)"
+echo "- Batch Size: $BATCH_SIZE (optimized for 12GB GPU)"
 echo "- Architecture: Frozen CNN6 visual system + New separate affective pathways"
 echo "- Visual System: CNN6 backbone (frozen, pretrained on AudioSet)"
 echo "- Affective System: Separate valence/arousal pathways (512→256→128→1)"
@@ -210,18 +234,25 @@ echo "- Look for 'Audio Mean MAE' and 'Audio Mean Pearson' in logs for best indi
 
 echo "Step 3: Evaluating trained model with CSV export and visualizations..."
 
-# Find the latest checkpoint
-LATEST_CHECKPOINT=$(find "$WORKSPACE/checkpoints" -name "*.pth" | sort -V | tail -n 1)
+# Find the best model checkpoint (preferred) or latest checkpoint as fallback
+BEST_MODEL_PATH=$(find "$WORKSPACE/checkpoints" -name "best_model.pth" | head -n 1)
 
-if [ -z "$LATEST_CHECKPOINT" ]; then
-    echo "No checkpoint found for evaluation!"
-    exit 1
+if [ -n "$BEST_MODEL_PATH" ]; then
+    CHECKPOINT_TO_USE="$BEST_MODEL_PATH"
+    echo "Using BEST model checkpoint: $CHECKPOINT_TO_USE"
+else
+    # Fallback to latest checkpoint if best model not found
+    LATEST_CHECKPOINT=$(find "$WORKSPACE/checkpoints" -name "*.pth" | sort -V | tail -n 1)
+    if [ -z "$LATEST_CHECKPOINT" ]; then
+        echo "No checkpoint found for evaluation!"
+        exit 1
+    fi
+    CHECKPOINT_TO_USE="$LATEST_CHECKPOINT"
+    echo "⚠️  Best model not found, using latest checkpoint: $CHECKPOINT_TO_USE"
 fi
 
-echo "Using checkpoint: $LATEST_CHECKPOINT"
-
 python pytorch/emotion_main.py inference \
-    --model_path "$LATEST_CHECKPOINT" \
+    --model_path "$CHECKPOINT_TO_USE" \
     --dataset_path "$FEATURE_FILE" \
     --model_type "FeatureEmotionRegression_Cnn6_NewAffective" \
     --batch_size 32 \

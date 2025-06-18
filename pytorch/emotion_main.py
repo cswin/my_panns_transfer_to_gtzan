@@ -154,7 +154,7 @@ def train(args):
     if resume_iteration:
         resume_checkpoint_path = os.path.join(checkpoints_dir, '{}_iterations.pth'.format(resume_iteration))
         logging.info('Loading resume model from {}'.format(resume_checkpoint_path))
-        resume_checkpoint = torch.load(resume_checkpoint_path)
+        resume_checkpoint = torch.load(resume_checkpoint_path, weights_only=False)
         model.load_state_dict(resume_checkpoint['model'])
         statistics_container.load_state_dict(resume_iteration)
         iteration = resume_checkpoint['iteration']
@@ -195,9 +195,28 @@ def train(args):
     if 'cuda' in device:
         model.to(device)
 
-    # Optimizer
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999),
-        eps=1e-08, weight_decay=0., amsgrad=True)
+    # Optimizer - use same settings for both models for fair comparison
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, 
+                          betas=(0.9, 0.999), eps=1e-08, weight_decay=0., amsgrad=True)
+    
+    # Stronger regularization only for LRM models (but same learning rate)
+    if 'LRM' in args.model_type:
+        # Only add weight decay for LRM models to handle additional feedback parameters
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate, 
+                              betas=(0.9, 0.999), eps=1e-08, weight_decay=0.01, amsgrad=True)
+        logging.info('Using stronger regularization (weight_decay=0.01) for LRM model')
+    
+    # Best model tracking for final evaluation (but continue training)
+    best_val_pearson = -1.0
+    best_model_path = None
+    
+    # Learning rate scheduler for LRM models
+    if 'LRM' in args.model_type:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, 
+                                                        patience=5, min_lr=1e-6)
+        logging.info('Using learning rate scheduler for LRM model')
+    else:
+        scheduler = None
 
     # Mixup augmentation
     if 'mixup' in augmentation:
@@ -237,6 +256,9 @@ def train(args):
                 logging.info('Validate Audio Mean Pearson: {:.4f}'.format(statistics['audio_mean_pearson']))
                 logging.info('Validate Audio Valence MAE: {:.4f}, Arousal MAE: {:.4f}'.format(
                     statistics['audio_valence_mae'], statistics['audio_arousal_mae']))
+                # Log separate valence and arousal Pearson correlations
+                logging.info('Validate Audio Valence Pearson: {:.4f}, Arousal Pearson: {:.4f}'.format(
+                    statistics['audio_valence_pearson'], statistics['audio_arousal_pearson']))
                 
                 # Also log segment-level for comparison
                 logging.info('Validate Segment Mean MAE: {:.4f}'.format(statistics['segment_mean_mae']))
@@ -245,6 +267,28 @@ def train(args):
                 # Append statistics
                 statistics_container.append(iteration, statistics, data_type='validate')
                 statistics_container.dump()
+
+                # Best model tracking for all models (good practice for anti-overfitting)
+                current_val_pearson = statistics['audio_mean_pearson']
+                
+                # Track best model for final evaluation (but continue training)
+                if current_val_pearson > best_val_pearson:
+                    best_val_pearson = current_val_pearson
+                    # Save best model
+                    best_model_path = os.path.join(checkpoints_dir, 'best_model.pth')
+                    checkpoint = {
+                        'iteration': iteration, 
+                        'model': model.module.state_dict(), 
+                        'optimizer': optimizer.state_dict(),
+                        'best_val_pearson': best_val_pearson}
+                    torch.save(checkpoint, best_model_path)
+                    logging.info('New best model saved with validation Pearson: {:.4f}'.format(best_val_pearson))
+
+                # Learning rate scheduling for LRM models only
+                if 'LRM' in args.model_type:
+                    # Update learning rate scheduler
+                    if scheduler is not None:
+                        scheduler.step(current_val_pearson)
 
                 train_time = train_fin_time - train_bgn_time
                 validate_time = time.time() - train_fin_time
@@ -395,7 +439,7 @@ def inference(args):
         raise ValueError(f'Unknown model type: {args.model_type}')
     
     # Load checkpoint
-    checkpoint = torch.load(model_path)
+    checkpoint = torch.load(model_path, weights_only=False)
     model.load_state_dict(checkpoint['model'])
     
     model = torch.nn.DataParallel(model)
@@ -416,11 +460,22 @@ def inference(args):
     else:
         evaluator = EmotionEvaluator(model=model)
     
-    # Create output directory for predictions based on model type
-    if 'LRM' in args.model_type:
-        workspace_base = 'workspaces/emotion_feedback'  # LRM models use feedback workspace
+    # Create output directory for predictions based on model path
+    # Extract workspace from model path to save predictions in the same workspace
+    model_dir = os.path.dirname(model_path)
+    if 'workspaces' in model_dir:
+        # Find the workspace directory (e.g., workspaces/emotion_feedback_stable)
+        workspace_parts = model_dir.split(os.sep)
+        workspace_idx = workspace_parts.index('workspaces')
+        if workspace_idx + 1 < len(workspace_parts):
+            workspace_base = os.path.join(*workspace_parts[:workspace_idx+2])
+        else:
+            # Fallback to model type-based logic
+            workspace_base = 'workspaces/emotion_feedback' if 'LRM' in args.model_type else 'workspaces/emotion_regression'
     else:
-        workspace_base = 'workspaces/emotion_regression'  # Baseline models use regression workspace
+        # Fallback to model type-based logic
+        workspace_base = 'workspaces/emotion_feedback' if 'LRM' in args.model_type else 'workspaces/emotion_regression'
+    
     output_dir = os.path.join(workspace_base, 'predictions')
     
     # Save predictions and get statistics

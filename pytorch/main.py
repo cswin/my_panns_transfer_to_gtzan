@@ -123,7 +123,7 @@ def train(args):
     if resume_iteration:
         resume_checkpoint_path = os.path.join(checkpoints_dir, '{}_iterations.pth'.format(resume_iteration))
         logging.info('Load resume model from {}'.format(resume_checkpoint_path))
-        resume_checkpoint = torch.load(resume_checkpoint_path)
+        resume_checkpoint = torch.load(resume_checkpoint_path, weights_only=False)
         model.load_state_dict(resume_checkpoint['model'])
         statistics_container.load_state_dict(resume_iteration)
         iteration = resume_checkpoint['iteration']

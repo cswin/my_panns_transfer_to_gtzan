@@ -14,6 +14,7 @@ EXCLUDES=(
     ".DS_Store"
     "venv"
     "*.egg-info"
+    "workspaces"
 )
 
 # Build exclude arguments

@@ -73,10 +73,34 @@ fi
 # Path to pretrained PANNs model (download from PANNs repository)
 PRETRAINED_MODEL="pretrained_model/Cnn6_mAP=0.343.pth"  # Cnn6 model
 
+# =============================================================================
+# Training Configuration for 12GB GPU with Feedback
+# =============================================================================
+
+# Updated configuration for epoch-based training with feedback
+BATCH_SIZE=48        # Same as baseline - 12GB GPU can handle feedback overhead
+EPOCHS=100           # More intuitive than iterations
+LEARNING_RATE=1e-4   # Standard learning rate
+
+# Calculate approximate iterations for 100 epochs
+# Assuming ~2000 training samples: 2000/48 ≈ 42 iterations/epoch
+# 100 epochs ≈ 4200 iterations (will auto-adjust based on actual dataset size)
+STOP_ITERATION=4200  # Conservative estimate for 100 epochs
+
 # Feedback model configuration
 MODEL_TYPE="FeatureEmotionRegression_Cnn6_LRM"
 FORWARD_PASSES=2  # Number of feedback iterations
-BATCH_SIZE=16     # Smaller batch size for feedback model (uses more memory)
+
+echo "🔄 Setting up Emotion Regression with ORIGINAL LRM TOP-DOWN FEEDBACK..."
+echo "🚀 Training Configuration:"
+echo "  - Model: $MODEL_TYPE (Original LRM Implementation)"
+echo "  - Batch Size: $BATCH_SIZE (same as baseline - 12GB GPU optimized)"
+echo "  - Target Epochs: $EPOCHS"
+echo "  - Estimated Iterations: $STOP_ITERATION"
+echo "  - Forward Passes: $FORWARD_PASSES"
+echo "  - Learning Rate: $LEARNING_RATE"
+echo "  - Advanced Features: Normalization, Squashing, Asymmetric Modulation"
+echo ""
 
 # =============================================================================
 # Validation Checks
@@ -187,9 +211,9 @@ fi
 
 echo ""
 echo "🚀 Step 2: Training emotion regression model with TOP-DOWN FEEDBACK..."
+echo "🎯 Training for $EPOCHS epochs with batch size $BATCH_SIZE"
 echo "Model: $MODEL_TYPE"
 echo "Forward Passes: $FORWARD_PASSES"
-echo "Batch Size: $BATCH_SIZE"
 echo ""
 
 # Test mixup fix first
@@ -212,22 +236,22 @@ python pytorch/emotion_main.py train \
     --freeze_base \
     --loss_type "mse" \
     --augmentation "$AUGMENTATION" \
-    --learning_rate 1e-4 \
-    --batch_size "$BATCH_SIZE" \
-    --forward_passes "$FORWARD_PASSES" \
-    --stop_iteration 5000 \
+    --learning_rate $LEARNING_RATE \
+    --batch_size $BATCH_SIZE \
+    --stop_iteration $STOP_ITERATION \
+    --forward_passes $FORWARD_PASSES \
     --cuda
 
-echo "✅ Training completed!"
+echo "✅ Training with feedback completed!"
 
 echo ""
-echo "🔄 === Feedback Training Notes ==="
-echo "- Model: $MODEL_TYPE with $FORWARD_PASSES forward passes"
-echo "- Each forward pass uses feedback from previous emotion predictions"
-echo "- Valence predictions modulate conv3 and conv4 features"
-echo "- Arousal predictions modulate conv2 features"  
-echo "- Training uses 70% train / 30% validation split by audio files"
-echo "- Look for 'Audio Mean MAE' and 'Audio Mean Pearson' in logs"
+echo "=== Training Notes ==="
+echo "- Model: $MODEL_TYPE (LRM with TOP-DOWN FEEDBACK)"
+echo "- Epochs: $EPOCHS (approx)"
+echo "- Batch Size: $BATCH_SIZE (same as baseline - 12GB GPU optimized)"
+echo "- Forward Passes: $FORWARD_PASSES"
+echo "- Architecture: CNN6 + LRM feedback connections"
+echo "- Feedback: Valence→semantic processing, Arousal→acoustic details"
 
 # =============================================================================
 # Evaluation with Feedback
@@ -235,18 +259,25 @@ echo "- Look for 'Audio Mean MAE' and 'Audio Mean Pearson' in logs"
 
 echo "🎯 Step 3: Evaluating feedback model with CSV export and visualizations..."
 
-# Find the latest checkpoint
-LATEST_CHECKPOINT=$(find "$WORKSPACE/checkpoints" -name "*.pth" | sort -V | tail -n 1)
+# Find the best model checkpoint (preferred for LRM models) or latest checkpoint as fallback
+BEST_MODEL_PATH=$(find "$WORKSPACE/checkpoints" -name "best_model.pth" | head -n 1)
 
-if [ -z "$LATEST_CHECKPOINT" ]; then
-    echo "No checkpoint found for evaluation!"
-    exit 1
+if [ -n "$BEST_MODEL_PATH" ]; then
+    CHECKPOINT_TO_USE="$BEST_MODEL_PATH"
+    echo "Using BEST model checkpoint: $CHECKPOINT_TO_USE"
+else
+    # Fallback to latest checkpoint if best model not found
+    LATEST_CHECKPOINT=$(find "$WORKSPACE/checkpoints" -name "*.pth" | sort -V | tail -n 1)
+    if [ -z "$LATEST_CHECKPOINT" ]; then
+        echo "No checkpoint found for evaluation!"
+        exit 1
+    fi
+    CHECKPOINT_TO_USE="$LATEST_CHECKPOINT"
+    echo "⚠️  Best model not found, using latest checkpoint: $CHECKPOINT_TO_USE"
 fi
 
-echo "Using checkpoint: $LATEST_CHECKPOINT"
-
 python pytorch/emotion_main.py inference \
-    --model_path "$LATEST_CHECKPOINT" \
+    --model_path "$CHECKPOINT_TO_USE" \
     --dataset_path "$FEATURE_FILE" \
     --model_type "$MODEL_TYPE" \
     --batch_size 32 \

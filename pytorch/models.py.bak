@@ -800,7 +800,7 @@ class FeatureEmotionRegression_Cnn14(EmotionRegression_Cnn14):
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
         """Load pretrained weights, excluding spectrogram/logmel extractors."""
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
+        checkpoint = torch.load(pretrained_checkpoint_path)
         pretrained_dict = checkpoint['model']
         
         # Remove spectrogram and logmel extractor weights
@@ -914,7 +914,7 @@ class EmotionRegression_Cnn6(nn.Module):
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
         """Load pretrained weights from AudioSet checkpoint."""
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
+        checkpoint = torch.load(pretrained_checkpoint_path)
         self.base.load_state_dict(checkpoint['model'])
 
     def forward(self, input, mixup_lambda=None):
@@ -967,7 +967,7 @@ class FeatureEmotionRegression_Cnn6(EmotionRegression_Cnn6):
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
         """Load pretrained weights, excluding spectrogram/logmel extractors."""
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
+        checkpoint = torch.load(pretrained_checkpoint_path)
         pretrained_dict = checkpoint['model']
         
         # Remove spectrogram and logmel extractor weights

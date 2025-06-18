@@ -18,6 +18,8 @@ def parse_training_curves(log_path):
         'val_audio_pearson': [],
         'val_valence_mae': [],
         'val_arousal_mae': [],
+        'val_valence_pearson': [],
+        'val_arousal_pearson': [],
         'val_segment_mae': [],
         'val_segment_pearson': [],
         'train_loss': [],
@@ -57,12 +59,23 @@ def parse_training_curves(log_path):
                 if pearson_match:
                     curves['val_audio_pearson'].append(float(pearson_match.group(1)))
             
+            # Parse valence and arousal MAE
             if 'Validate Audio Valence MAE:' in line and 'Arousal MAE:' in line:
                 valence_match = re.search(r'Valence MAE:\s*([\d.]+)', line)
                 arousal_match = re.search(r'Arousal MAE:\s*([\d.]+)', line)
                 if valence_match and arousal_match:
                     curves['val_valence_mae'].append(float(valence_match.group(1)))
                     curves['val_arousal_mae'].append(float(arousal_match.group(1)))
+            
+            # Parse valence and arousal Pearson correlations
+            if 'Validate Audio Valence Pearson:' in line and 'Arousal Pearson:' in line:
+                valence_pearson_match = re.search(r'Valence Pearson:\s*([\d.]+)', line)
+                arousal_pearson_match = re.search(r'Arousal Pearson:\s*([\d.]+)', line)
+                if valence_pearson_match and arousal_pearson_match and current_iteration > 0:
+                    # Only add if we have a valid current iteration
+                    if len(curves['val_valence_pearson']) < len(curves['iterations']):
+                        curves['val_valence_pearson'].append(float(valence_pearson_match.group(1)))
+                        curves['val_arousal_pearson'].append(float(arousal_pearson_match.group(1)))
             
             if 'Validate Segment Mean MAE:' in line:
                 seg_mae_match = re.search(r'Validate Segment Mean MAE:\s*([\d.]+)', line)
@@ -92,6 +105,61 @@ def find_latest_log_for_model(workspace_path, model_name):
     log_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
     return log_files[0]
 
+def plot_single_metric(baseline_curves, lrm_curves, metric_key, title, ylabel, filename, higher_better=False):
+    """Plot a single training metric comparison."""
+    plt.figure(figsize=(12, 8))
+    
+    if baseline_curves['iterations'] and baseline_curves[metric_key]:
+        plt.plot(baseline_curves['iterations'], baseline_curves[metric_key], 
+                'b-', linewidth=3, label='Baseline (NewAffective)', marker='o', markersize=5, alpha=0.8)
+    
+    if lrm_curves['iterations'] and lrm_curves[metric_key]:
+        plt.plot(lrm_curves['iterations'], lrm_curves[metric_key], 
+                'r-', linewidth=3, label='LRM (Feedback)', marker='s', markersize=5, alpha=0.8)
+    
+    plt.xlabel('Training Iteration', fontsize=14)
+    plt.ylabel(ylabel, fontsize=14)
+    plt.title(title, fontsize=16, fontweight='bold', pad=20)
+    plt.legend(fontsize=12, loc='best')
+    plt.grid(True, alpha=0.3)
+    
+    # Add performance indicator
+    if higher_better:
+        plt.text(0.02, 0.02, '(Higher is Better)', transform=plt.gca().transAxes, 
+                fontsize=10, style='italic', alpha=0.7)
+    else:
+        plt.text(0.02, 0.98, '(Lower is Better)', transform=plt.gca().transAxes, 
+                fontsize=10, style='italic', alpha=0.7, verticalalignment='top')
+    
+    # Save the plot
+    os.makedirs('training_curves', exist_ok=True)
+    output_file = f'training_curves/{filename}.png'
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"📊 {title} saved to: {output_file}")
+    
+    # Also save as PDF
+    output_pdf = f'training_curves/{filename}.pdf'
+    plt.savefig(output_pdf, bbox_inches='tight')
+    
+    plt.show()
+    
+    # Print summary
+    if baseline_curves[metric_key]:
+        if higher_better:
+            best_baseline = max(baseline_curves[metric_key])
+        else:
+            best_baseline = min(baseline_curves[metric_key])
+        final_baseline = baseline_curves[metric_key][-1]
+        print(f"Baseline: {best_baseline:.4f} (best) → {final_baseline:.4f} (final)")
+    
+    if lrm_curves[metric_key]:
+        if higher_better:
+            best_lrm = max(lrm_curves[metric_key])
+        else:
+            best_lrm = min(lrm_curves[metric_key])
+        final_lrm = lrm_curves[metric_key][-1]
+        print(f"LRM: {best_lrm:.4f} (best) → {final_lrm:.4f} (final)")
+
 def plot_training_curves():
     """Plot training curves for both baseline and LRM models."""
     
@@ -117,131 +185,80 @@ def plot_training_curves():
         print("❌ Could not parse training curves")
         return
     
-    # Create the plots
-    plt.style.use('default')
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Training Curves: Baseline vs LRM Emotion Regression', fontsize=16, fontweight='bold')
+    print(f"\n📈 GENERATING AUDIO-LEVEL PERFORMANCE PLOTS:")
+    print("=" * 60)
     
-    # Plot 1: Audio MAE over iterations
-    ax1 = axes[0, 0]
-    if baseline_curves['iterations'] and baseline_curves['val_audio_mae']:
-        ax1.plot(baseline_curves['iterations'], baseline_curves['val_audio_mae'], 
-                'b-', linewidth=2, label='Baseline (NewAffective)', marker='o', markersize=3)
-    if lrm_curves['iterations'] and lrm_curves['val_audio_mae']:
-        ax1.plot(lrm_curves['iterations'], lrm_curves['val_audio_mae'], 
-                'r-', linewidth=2, label='LRM (Feedback)', marker='s', markersize=3)
+    # Plot 1: Valence Pearson Correlation
+    if baseline_curves['val_valence_pearson'] or lrm_curves['val_valence_pearson']:
+        print(f"\n1️⃣ Valence Pearson Correlation:")
+        plot_single_metric(
+            baseline_curves, lrm_curves, 
+            'val_valence_pearson',
+            'Audio-Level Valence Performance (Pearson Correlation)',
+            'Valence Pearson Correlation',
+            'valence_pearson_comparison',
+            higher_better=True
+        )
+    else:
+        print("⚠️ No valence Pearson data found in logs")
     
-    ax1.set_xlabel('Training Iteration')
-    ax1.set_ylabel('Validation Audio MAE')
-    ax1.set_title('Audio-Level Mean Absolute Error\n(Lower is Better)')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    # Plot 2: Arousal Pearson Correlation  
+    if baseline_curves['val_arousal_pearson'] or lrm_curves['val_arousal_pearson']:
+        print(f"\n2️⃣ Arousal Pearson Correlation:")
+        plot_single_metric(
+            baseline_curves, lrm_curves,
+            'val_arousal_pearson', 
+            'Audio-Level Arousal Performance (Pearson Correlation)',
+            'Arousal Pearson Correlation',
+            'arousal_pearson_comparison',
+            higher_better=True
+        )
+    else:
+        print("⚠️ No arousal Pearson data found in logs")
     
-    # Plot 2: Audio Pearson correlation over iterations
-    ax2 = axes[0, 1]
-    if baseline_curves['iterations'] and baseline_curves['val_audio_pearson']:
-        ax2.plot(baseline_curves['iterations'], baseline_curves['val_audio_pearson'], 
-                'b-', linewidth=2, label='Baseline (NewAffective)', marker='o', markersize=3)
-    if lrm_curves['iterations'] and lrm_curves['val_audio_pearson']:
-        ax2.plot(lrm_curves['iterations'], lrm_curves['val_audio_pearson'], 
-                'r-', linewidth=2, label='LRM (Feedback)', marker='s', markersize=3)
+    # Plot 3: Valence MAE
+    if baseline_curves['val_valence_mae'] or lrm_curves['val_valence_mae']:
+        print(f"\n3️⃣ Valence MAE:")
+        plot_single_metric(
+            baseline_curves, lrm_curves,
+            'val_valence_mae',
+            'Audio-Level Valence Performance (Mean Absolute Error)',
+            'Valence MAE',
+            'valence_mae_comparison',
+            higher_better=False
+        )
+    else:
+        print("⚠️ No valence MAE data found in logs")
     
-    ax2.set_xlabel('Training Iteration')
-    ax2.set_ylabel('Validation Audio Pearson Correlation')
-    ax2.set_title('Audio-Level Pearson Correlation\n(Higher is Better)')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    # Plot 3: Valence vs Arousal MAE
-    ax3 = axes[1, 0]
-    if baseline_curves['iterations'] and baseline_curves['val_valence_mae']:
-        ax3.plot(baseline_curves['iterations'], baseline_curves['val_valence_mae'], 
-                'b-', linewidth=2, label='Baseline Valence', marker='o', markersize=3)
-        ax3.plot(baseline_curves['iterations'], baseline_curves['val_arousal_mae'], 
-                'b--', linewidth=2, label='Baseline Arousal', marker='o', markersize=3)
-    if lrm_curves['iterations'] and lrm_curves['val_valence_mae']:
-        ax3.plot(lrm_curves['iterations'], lrm_curves['val_valence_mae'], 
-                'r-', linewidth=2, label='LRM Valence', marker='s', markersize=3)
-        ax3.plot(lrm_curves['iterations'], lrm_curves['val_arousal_mae'], 
-                'r--', linewidth=2, label='LRM Arousal', marker='s', markersize=3)
-    
-    ax3.set_xlabel('Training Iteration')
-    ax3.set_ylabel('Validation MAE')
-    ax3.set_title('Valence vs Arousal MAE\n(Lower is Better)')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
-    
-    # Plot 4: Segment-level performance
-    ax4 = axes[1, 1]
-    if baseline_curves['iterations'] and baseline_curves['val_segment_mae']:
-        ax4.plot(baseline_curves['iterations'], baseline_curves['val_segment_mae'], 
-                'b-', linewidth=2, label='Baseline Segment MAE', marker='o', markersize=3)
-    if baseline_curves['iterations'] and baseline_curves['val_segment_pearson']:
-        # Scale Pearson to same range as MAE for visualization
-        scaled_pearson = [p * 0.8 for p in baseline_curves['val_segment_pearson']]  # Scale down for visibility
-        ax4.plot(baseline_curves['iterations'], scaled_pearson, 
-                'b:', linewidth=2, label='Baseline Segment Pearson (×0.8)', marker='o', markersize=3)
-    
-    if lrm_curves['iterations'] and lrm_curves['val_segment_mae']:
-        ax4.plot(lrm_curves['iterations'], lrm_curves['val_segment_mae'], 
-                'r-', linewidth=2, label='LRM Segment MAE', marker='s', markersize=3)
-    if lrm_curves['iterations'] and lrm_curves['val_segment_pearson']:
-        # Scale Pearson to same range as MAE for visualization
-        scaled_pearson = [p * 0.8 for p in lrm_curves['val_segment_pearson']]  # Scale down for visibility
-        ax4.plot(lrm_curves['iterations'], scaled_pearson, 
-                'r:', linewidth=2, label='LRM Segment Pearson (×0.8)', marker='s', markersize=3)
-    
-    ax4.set_xlabel('Training Iteration')
-    ax4.set_ylabel('Validation Metrics')
-    ax4.set_title('Segment-Level Performance\n(MAE: Lower Better, Pearson: Higher Better)')
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
-    
-    # Adjust layout and save
-    plt.tight_layout()
-    
-    # Create output directory
-    os.makedirs('training_curves', exist_ok=True)
-    
-    # Save the plot
-    output_file = 'training_curves/baseline_vs_lrm_training_curves.png'
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"📊 Training curves saved to: {output_file}")
-    
-    # Also save as PDF for high quality
-    output_pdf = 'training_curves/baseline_vs_lrm_training_curves.pdf'
-    plt.savefig(output_pdf, bbox_inches='tight')
-    print(f"📄 High-quality PDF saved to: {output_pdf}")
-    
-    # Show the plot
-    plt.show()
-    
-    # Print summary statistics
-    print(f"\n📈 TRAINING CURVE SUMMARY:")
-    print(f"Baseline Model:")
-    if baseline_curves['val_audio_mae']:
-        print(f"  - Audio MAE: {min(baseline_curves['val_audio_mae']):.4f} (best) → {baseline_curves['val_audio_mae'][-1]:.4f} (final)")
-    if baseline_curves['val_audio_pearson']:
-        print(f"  - Audio Pearson: {max(baseline_curves['val_audio_pearson']):.4f} (best) → {baseline_curves['val_audio_pearson'][-1]:.4f} (final)")
-    
-    print(f"\nLRM Model:")
-    if lrm_curves['val_audio_mae']:
-        print(f"  - Audio MAE: {min(lrm_curves['val_audio_mae']):.4f} (best) → {lrm_curves['val_audio_mae'][-1]:.4f} (final)")
-    if lrm_curves['val_audio_pearson']:
-        print(f"  - Audio Pearson: {max(lrm_curves['val_audio_pearson']):.4f} (best) → {lrm_curves['val_audio_pearson'][-1]:.4f} (final)")
+    # Plot 4: Arousal MAE
+    if baseline_curves['val_arousal_mae'] or lrm_curves['val_arousal_mae']:
+        print(f"\n4️⃣ Arousal MAE:")
+        plot_single_metric(
+            baseline_curves, lrm_curves,
+            'val_arousal_mae',
+            'Audio-Level Arousal Performance (Mean Absolute Error)', 
+            'Arousal MAE',
+            'arousal_mae_comparison',
+            higher_better=False
+        )
+    else:
+        print("⚠️ No arousal MAE data found in logs")
 
 def main():
     """Main function to generate training curve plots."""
-    print("📊 GENERATING TRAINING CURVES")
+    print("📊 GENERATING AUDIO-LEVEL VALENCE & AROUSAL PLOTS")
     print("=" * 50)
     
     plot_training_curves()
     
-    print(f"\n✅ Training curve analysis completed!")
-    print(f"💡 The plots show validation accuracy over training iterations")
-    print(f"   - Compare how both models learned over time")
-    print(f"   - Look for convergence patterns and stability")
-    print(f"   - Check if either model shows signs of overfitting")
+    print(f"\n✅ Audio-level performance analysis completed!")
+    print(f"💡 Generated 4 separate plots focusing on:")
+    print(f"   - Valence Pearson Correlation (higher is better)")
+    print(f"   - Arousal Pearson Correlation (higher is better)")
+    print(f"   - Valence MAE (lower is better)")
+    print(f"   - Arousal MAE (lower is better)")
+    print(f"\n🔍 Note: The training script now logs separate valence/arousal")
+    print(f"   Pearson correlations. You may need to retrain to get this data")
 
 if __name__ == '__main__':
     main() 

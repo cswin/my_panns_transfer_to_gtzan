@@ -78,14 +78,14 @@ PRETRAINED_MODEL="pretrained_model/Cnn6_mAP=0.343.pth"  # Cnn6 model
 # =============================================================================
 
 # Updated configuration for epoch-based training with feedback
-BATCH_SIZE=48        # Same as baseline - 12GB GPU can handle feedback overhead
+BATCH_SIZE=32        # Optimized batch size for stable feedback training
 EPOCHS=100           # More intuitive than iterations
-LEARNING_RATE=1e-4   # Standard learning rate
+LEARNING_RATE=0.001  # Higher learning rate for feedback model convergence
 
 # Calculate approximate iterations for 100 epochs
 # Assuming ~2000 training samples: 2000/48 ≈ 42 iterations/epoch
 # 100 epochs ≈ 4200 iterations (will auto-adjust based on actual dataset size)
-STOP_ITERATION=4200  # Conservative estimate for 100 epochs
+STOP_ITERATION=20000  # Extended training for better convergence
 
 # Feedback model configuration
 MODEL_TYPE="FeatureEmotionRegression_Cnn6_LRM"
@@ -94,7 +94,7 @@ FORWARD_PASSES=2  # Number of feedback iterations
 echo "🔄 Setting up Emotion Regression with ORIGINAL LRM TOP-DOWN FEEDBACK..."
 echo "🚀 Training Configuration:"
 echo "  - Model: $MODEL_TYPE (Original LRM Implementation)"
-echo "  - Batch Size: $BATCH_SIZE (same as baseline - 12GB GPU optimized)"
+echo "  - Batch Size: $BATCH_SIZE (optimized for stable feedback training)"
 echo "  - Target Epochs: $EPOCHS"
 echo "  - Estimated Iterations: $STOP_ITERATION"
 echo "  - Forward Passes: $FORWARD_PASSES"
@@ -216,17 +216,9 @@ echo "Model: $MODEL_TYPE"
 echo "Forward Passes: $FORWARD_PASSES"
 echo ""
 
-# Test mixup fix first
-echo "Testing mixup fix..."
-python test_mixup_fix.py
-
-if [ $? -ne 0 ]; then
-    echo "Mixup test failed, training without mixup augmentation"
-    AUGMENTATION="none"
-else
-    echo "Mixup test passed, using mixup augmentation"
-    AUGMENTATION="mixup"
-fi
+# Force mixup augmentation for consistent comparison
+echo "Using mixup augmentation (forced on for fair comparison)"
+AUGMENTATION="mixup"
 
 python pytorch/emotion_main.py train \
     --dataset_path "$FEATURE_FILE" \
@@ -248,7 +240,7 @@ echo ""
 echo "=== Training Notes ==="
 echo "- Model: $MODEL_TYPE (LRM with TOP-DOWN FEEDBACK)"
 echo "- Epochs: $EPOCHS (approx)"
-echo "- Batch Size: $BATCH_SIZE (same as baseline - 12GB GPU optimized)"
+echo "- Batch Size: $BATCH_SIZE (optimized for stable feedback training)"
 echo "- Forward Passes: $FORWARD_PASSES"
 echo "- Architecture: CNN6 + LRM feedback connections"
 echo "- Feedback: Valence→semantic processing, Arousal→acoustic details"

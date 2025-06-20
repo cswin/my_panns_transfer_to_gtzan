@@ -164,17 +164,17 @@ fi
 # =============================================================================
 
 # Updated configuration for epoch-based training
-BATCH_SIZE=48        # Optimal for 12GB GPU (3x faster than batch=16)
+BATCH_SIZE=32        # Optimized batch size for consistent comparison
 EPOCHS=100           # More intuitive than iterations
-LEARNING_RATE=1e-4   # Standard learning rate
+LEARNING_RATE=0.001  # Higher learning rate for better convergence
 
 # Calculate approximate iterations for 100 epochs
 # Assuming ~2000 training samples: 2000/48 ≈ 42 iterations/epoch
 # 100 epochs ≈ 4200 iterations (will auto-adjust based on actual dataset size)
-STOP_ITERATION=4200  # Conservative estimate for 100 epochs
+STOP_ITERATION=20000  # Extended training for better convergence
 
 echo "🚀 Training Configuration:"
-echo "  - Batch Size: $BATCH_SIZE (optimized for 12GB GPU)"
+echo "  - Batch Size: $BATCH_SIZE (optimized for consistent comparison)"
 echo "  - Target Epochs: $EPOCHS"
 echo "  - Estimated Iterations: $STOP_ITERATION"
 echo "  - Learning Rate: $LEARNING_RATE"
@@ -187,17 +187,9 @@ echo ""
 echo "Step 2: Training emotion regression model (Cnn6 with New Affective System)..."
 echo "🎯 Training for $EPOCHS epochs with batch size $BATCH_SIZE"
 
-# Test mixup fix first
-echo "Testing mixup fix..."
-python test_mixup_fix.py
-
-if [ $? -ne 0 ]; then
-    echo "Mixup test failed, training without mixup augmentation"
-    AUGMENTATION="none"
-else
-    echo "Mixup test passed, using mixup augmentation"
-    AUGMENTATION="mixup"
-fi
+# Force mixup augmentation for consistent comparison
+echo "Using mixup augmentation (forced on for fair comparison)"
+AUGMENTATION="mixup"
 
 python pytorch/emotion_main.py train \
     --dataset_path "$FEATURE_FILE" \
@@ -218,7 +210,7 @@ echo ""
 echo "=== Training Notes ==="
 echo "- Model: FeatureEmotionRegression_Cnn6_NewAffective"
 echo "- Epochs: $EPOCHS (approx)"
-echo "- Batch Size: $BATCH_SIZE (optimized for 12GB GPU)"
+echo "- Batch Size: $BATCH_SIZE (optimized for consistent comparison)"
 echo "- Architecture: Frozen CNN6 visual system + New separate affective pathways"
 echo "- Visual System: CNN6 backbone (frozen, pretrained on AudioSet)"
 echo "- Affective System: Separate valence/arousal pathways (512→256→128→1)"

@@ -61,8 +61,21 @@ coverage.xml
 *.pkl
 *.model
 *.pth
-data/
-models/
+# Ignore actual data directories but NOT source code directories
+**/datasets/
+**/features/
+**/raw_data/
+**/audio_data/
+workspaces/*/data/
+# Allow src/data/ (source code) to be tracked
+!src/data/
+# Ignore trained model files but NOT source code directories  
+**/trained_models/
+**/saved_models/
+**/model_checkpoints/
+workspaces/*/models/
+# Allow src/models/ (source code) to be tracked
+!src/models/
 checkpoints/
 runs/
 

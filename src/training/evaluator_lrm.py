@@ -6,7 +6,7 @@ import time
 import pandas as pd
 import os
 from collections import defaultdict
-from emotion_evaluate import EmotionEvaluator
+from src.training.evaluator import EmotionEvaluator
 
 
 class LRMEmotionEvaluator(EmotionEvaluator):

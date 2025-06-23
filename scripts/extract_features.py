@@ -21,8 +21,8 @@ import argparse
 from tqdm import tqdm
 import glob
 
-from utilities import create_folder
-from config import sample_rate, clip_samples, mel_bins, fmin, fmax, window_size, hop_size
+from src.utils.audio_utils import create_folder
+from src.utils.config import sample_rate, clip_samples, mel_bins, fmin, fmax, window_size, hop_size
 
 
 def extract_melspectrogram_segments(audio_path, sr=32000, clip_duration=6.0, segment_duration=1.0):

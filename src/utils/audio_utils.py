@@ -9,7 +9,7 @@ import numpy as np
 import csv
 import h5py
 
-import config
+from src.utils.config import *
 
 
 def create_folder(fd):

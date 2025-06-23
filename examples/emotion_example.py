@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Example script showing how to use Cnn6 models for emotion regression.
 This demonstrates the basic usage without requiring the full dataset.
@@ -11,8 +12,8 @@ sys.path.insert(1, os.path.join(sys.path[0], 'pytorch'))
 
 import torch
 import numpy as np
-from config import sample_rate, cnn6_config
-from models import FeatureEmotionRegression_Cnn6, EmotionRegression_Cnn6
+from src.utils.config import sample_rate, cnn6_config
+from src.models import FeatureEmotionRegression_Cnn6, EmotionRegression_Cnn6
 
 def test_cnn6_emotion_models():
     """Test the Cnn6 emotion regression models with dummy data."""

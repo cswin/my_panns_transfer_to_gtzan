@@ -5,11 +5,8 @@ import h5py
 import sys
 import os
 
-# Add pytorch directory to path
-sys.path.append('pytorch')
-
-from pytorch.emotion_evaluate import EmotionEvaluator
-from pytorch.data_generator import EmoSoundscapesDataset, EmotionValidateSampler, emotion_collate_fn
+from src.training.evaluator import EmotionEvaluator
+from src.data.data_generator import EmoSoundscapesDataset, EmotionValidateSampler, emotion_collate_fn
 import torch
 
 def test_emotion_evaluation(feature_path):

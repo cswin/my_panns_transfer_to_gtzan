@@ -7,9 +7,8 @@ import h5py
 import numpy as np
 import sys
 import os
-sys.path.insert(1, os.path.join(sys.path[0], 'pytorch'))
 
-from data_generator import EmotionTrainSampler, EmotionValidateSampler
+from src.data.data_generator import EmotionTrainSampler, EmotionValidateSampler
 
 def test_data_split(feature_path, train_ratio=0.7):
     """Test the data splitting to ensure no audio file appears in both train and validation."""

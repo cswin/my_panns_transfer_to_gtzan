@@ -19,15 +19,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from config import sample_rate, mel_bins, fmin, fmax, window_size, hop_size, cnn14_config, cnn6_config
-from losses import get_loss_func
-from pytorch_utils import move_data_to_device, do_mixup
-from utilities import (create_folder, get_filename, create_logging, StatisticsContainer, Mixup)
-from data_generator import EmoSoundscapesDataset, EmotionTrainSampler, EmotionValidateSampler, emotion_collate_fn
-from models import FeatureEmotionRegression_Cnn14, EmotionRegression_Cnn14, FeatureEmotionRegression_Cnn6, EmotionRegression_Cnn6, FeatureEmotionRegression_Cnn6_NewAffective
-from models_lrm import FeatureEmotionRegression_Cnn6_LRM
-from emotion_evaluate import EmotionEvaluator
-from emotion_evaluate_lrm import LRMEmotionEvaluator
+from src.utils.pytorch_utils import move_data_to_device, do_mixup
+from src.utils.audio_utils import (create_folder, get_filename, create_logging, StatisticsContainer, Mixup)
+from src.utils.config import sample_rate, mel_bins, fmin, fmax, window_size, hop_size, cnn14_config, cnn6_config
+from src.training.losses import get_loss_func
+from src.data.data_generator import EmoSoundscapesDataset, EmotionTrainSampler, EmotionValidateSampler, emotion_collate_fn, GtzanDataset, TrainSampler, EvaluateSampler, collate_fn
+from src.models.cnn_models import FeatureEmotionRegression_Cnn14, EmotionRegression_Cnn14, FeatureEmotionRegression_Cnn6, EmotionRegression_Cnn6, FeatureEmotionRegression_Cnn6_NewAffective, Transfer_Cnn6, Transfer_Cnn14, FeatureAffectiveCnn6
+from src.models.emotion_models import FeatureEmotionRegression_Cnn6_LRM
+from src.training.evaluator import EmotionEvaluator
+from src.training.evaluator_lrm import LRMEmotionEvaluator
 
 
 def train(args):
@@ -118,16 +118,6 @@ def train(args):
             fmin=config['fmin'], 
             fmax=config['fmax'], 
             freeze_base=freeze_base)
-    elif args.model_type == 'FeatureEmotionRegression_Cnn6_NewAffective':
-        config = cnn6_config
-        model = FeatureEmotionRegression_Cnn6_NewAffective(
-            sample_rate=sample_rate, 
-            window_size=config['window_size'], 
-            hop_size=config['hop_size'], 
-            mel_bins=config['mel_bins'], 
-            fmin=config['fmin'], 
-            fmax=config['fmax'], 
-            freeze_base=freeze_base)
     elif args.model_type == 'FeatureEmotionRegression_Cnn6_LRM':
         config = cnn6_config
         model = FeatureEmotionRegression_Cnn6_LRM(
@@ -139,6 +129,16 @@ def train(args):
             fmax=config['fmax'], 
             freeze_base=freeze_base,
             forward_passes=getattr(args, 'forward_passes', 2))
+    elif args.model_type == 'FeatureEmotionRegression_Cnn6_NewAffective':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_NewAffective(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base)
     else:
         raise ValueError(f'Unknown model type: {args.model_type}')
 
@@ -146,9 +146,12 @@ def train(args):
     statistics_container = StatisticsContainer(statistics_path)
 
     # Load pretrained weights
-    if pretrain:
-        logging.info('Loading pretrained model from {}'.format(pretrained_checkpoint_path))
-        model.load_from_pretrain(pretrained_checkpoint_path)
+    if pretrained_checkpoint_path:
+        logging.info(f'Loading pretrained model from {pretrained_checkpoint_path}')
+        if model_type == 'FeatureAffectiveCnn6':
+            model.load_visual_pretrain(pretrained_checkpoint_path)
+        else:
+            model.load_from_pretrain(pretrained_checkpoint_path)
 
     # Resume training
     if resume_iteration:
@@ -318,10 +321,6 @@ def train(args):
         batch_valence_target = move_data_to_device(batch_data_dict['valence'], device)
         batch_arousal_target = move_data_to_device(batch_data_dict['arousal'], device)
 
-        # Add channel dimension for feature input
-        if len(batch_feature.shape) == 3:  # (batch_size, time_steps, mel_bins)
-            batch_feature = batch_feature.unsqueeze(1)  # (batch_size, 1, time_steps, mel_bins)
-
         # Mixup augmentation
         if 'mixup' in augmentation:
             batch_feature, batch_valence_target, batch_arousal_target = do_mixup_emotion(
@@ -414,16 +413,6 @@ def inference(args):
             fmin=config['fmin'], 
             fmax=config['fmax'], 
             freeze_base=True)
-    elif args.model_type == 'FeatureEmotionRegression_Cnn6_NewAffective':
-        config = cnn6_config
-        model = FeatureEmotionRegression_Cnn6_NewAffective(
-            sample_rate=sample_rate, 
-            window_size=config['window_size'], 
-            hop_size=config['hop_size'], 
-            mel_bins=config['mel_bins'], 
-            fmin=config['fmin'], 
-            fmax=config['fmax'], 
-            freeze_base=True)
     elif args.model_type == 'FeatureEmotionRegression_Cnn6_LRM':
         config = cnn6_config
         model = FeatureEmotionRegression_Cnn6_LRM(
@@ -435,6 +424,16 @@ def inference(args):
             fmax=config['fmax'], 
             freeze_base=True,
             forward_passes=getattr(args, 'forward_passes', 2))
+    elif args.model_type == 'FeatureEmotionRegression_Cnn6_NewAffective':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_NewAffective(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=True)
     else:
         raise ValueError(f'Unknown model type: {args.model_type}')
     
@@ -487,23 +486,207 @@ def inference(args):
     # Generate visualizations
     print("\nGenerating visualizations...")
     try:
-        # Fix import path - add parent directory to sys.path to find emotion_visualize
-        import sys
-        parent_dir = os.path.join(os.path.dirname(__file__), '..')
-        sys.path.insert(0, os.path.abspath(parent_dir))
-        
-        from emotion_visualize import create_emotion_visualizations
+        from src.utils.emotion_visualize import create_emotion_visualizations
         create_emotion_visualizations(output_dir)
         print(f"Visualizations saved in: {output_dir}")
     except ImportError as e:
         print(f"emotion_visualize module not found: {e}")
         print("Install matplotlib and seaborn to generate plots.")
-        print("You can manually run: python generate_emotion_plots.py <output_dir>")
+        print("You can manually run: python src/utils/emotion_visualize.py <output_dir>")
     except Exception as e:
         print(f"Error generating visualizations: {e}")
-        print("You can manually run: python generate_emotion_plots.py <output_dir>")
+        print("You can manually run: python src/utils/emotion_visualize.py <output_dir>")
     
     return statistics, output_dict
+
+
+def train_genre(dataset_dir, workspace, holdout_fold, model_type, pretrained_checkpoint_path=None, 
+                freeze_base=False, loss_type='clip_nll', augmentation='none', learning_rate=1e-4, 
+                batch_size=32, resume_iteration=0, stop_iteration=10000, cuda=True, gpu_id=0):
+    """Main training function for music genre classification."""
+    
+    # Set CUDA device
+    if cuda and torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+        device = 'cuda'
+    else:
+        device = 'cpu'
+    
+    # Create directories
+    checkpoints_dir = os.path.join(workspace, 'checkpoints', model_type)
+    create_folder(checkpoints_dir)
+    
+    statistics_path = os.path.join(workspace, 'statistics', model_type, 'statistics.pickle')
+    create_folder(os.path.dirname(statistics_path))
+    
+    logs_dir = os.path.join(workspace, 'logs', model_type)
+    create_logging(logs_dir, 'w')
+    
+    logging.info(f'Training music genre classification model: {model_type}')
+    logging.info(f'Dataset: {dataset_dir}')
+    logging.info(f'Workspace: {workspace}')
+    logging.info(f'Device: {device}')
+    
+    # Model creation
+    if model_type == 'Transfer_Cnn6':
+        config = cnn6_config
+        model = Transfer_Cnn6(
+            sample_rate=sample_rate,
+            window_size=config['window_size'],
+            hop_size=config['hop_size'],
+            mel_bins=config['mel_bins'],
+            fmin=config['fmin'],
+            fmax=config['fmax'],
+            classes_num=10,  # GTZAN has 10 genres
+            freeze_base=freeze_base
+        )
+    elif model_type == 'Transfer_Cnn14':
+        config = cnn14_config
+        model = Transfer_Cnn14(
+            sample_rate=sample_rate,
+            window_size=config['window_size'],
+            hop_size=config['hop_size'],
+            mel_bins=config['mel_bins'],
+            fmin=config['fmin'],
+            fmax=config['fmax'],
+            classes_num=10,  # GTZAN has 10 genres
+            freeze_base=freeze_base
+        )
+    elif model_type == 'FeatureAffectiveCnn6':
+        config = cnn6_config
+        model = FeatureAffectiveCnn6(
+            sample_rate=sample_rate,
+            window_size=config['window_size'],
+            hop_size=config['hop_size'],
+            mel_bins=config['mel_bins'],
+            fmin=config['fmin'],
+            fmax=config['fmax'],
+            classes_num=10,  # GTZAN has 10 genres
+            freeze_visual_system=freeze_base
+        )
+    else:
+        raise ValueError(f'Unknown model type: {model_type}')
+    
+    # Load pretrained weights
+    if pretrained_checkpoint_path:
+        logging.info(f'Loading pretrained model from {pretrained_checkpoint_path}')
+        if model_type == 'FeatureAffectiveCnn6':
+            model.load_visual_pretrain(pretrained_checkpoint_path)
+        else:
+            model.load_from_pretrain(pretrained_checkpoint_path)
+    
+    # Move model to device
+    if 'cuda' in device:
+        model = torch.nn.DataParallel(model)
+        model.to(device)
+    
+    # Dataset and data loaders
+    dataset = GtzanDataset()
+    
+    # Create feature file path
+    feature_file = os.path.join(workspace, 'features', 'features.h5')
+    
+    # Data samplers
+    train_sampler = TrainSampler(
+        hdf5_path=feature_file,
+        holdout_fold=holdout_fold,
+        batch_size=batch_size
+    )
+    
+    validate_sampler = EvaluateSampler(
+        hdf5_path=feature_file,
+        holdout_fold=holdout_fold,
+        batch_size=batch_size
+    )
+    
+    # Data loaders
+    train_loader = torch.utils.data.DataLoader(
+        dataset=dataset,
+        batch_sampler=train_sampler,
+        collate_fn=collate_fn,
+        num_workers=8,
+        pin_memory=True
+    )
+    
+    validate_loader = torch.utils.data.DataLoader(
+        dataset=dataset,
+        batch_sampler=validate_sampler,
+        collate_fn=collate_fn,
+        num_workers=8,
+        pin_memory=True
+    )
+    
+    # Optimizer
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Loss function
+    if loss_type == 'clip_nll':
+        criterion = nn.CrossEntropyLoss()
+    else:
+        raise ValueError(f'Unknown loss type: {loss_type}')
+    
+    # Training loop
+    iteration = 0
+    for batch_data_dict in train_loader:
+        
+        # Move data to device
+        batch_feature = move_data_to_device(batch_data_dict['feature'], device)
+        batch_target = move_data_to_device(batch_data_dict['target'], device)
+        
+        # Forward pass (model will add channel dimension internally)
+        model.train()
+        batch_output_dict = model(batch_feature)
+        batch_output = batch_output_dict['clipwise_output']
+        
+        # Calculate loss
+        loss = criterion(batch_output, batch_target)
+        
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        # Print progress
+        if iteration % 100 == 0:
+            print(f'Iteration: {iteration}, loss: {loss.item():.3f}')
+        
+        # Evaluate periodically
+        if iteration % 500 == 0 and iteration > 0:
+            model.eval()
+            with torch.no_grad():
+                total_loss = 0
+                correct = 0
+                total = 0
+                num_batches = 0
+                
+                for val_batch in validate_loader:
+                    val_feature = move_data_to_device(val_batch['feature'], device)
+                    val_target = move_data_to_device(val_batch['target'], device)
+                    
+                    val_output_dict = model(val_feature)
+                    val_output = val_output_dict['clipwise_output']
+                    
+                    val_loss = criterion(val_output, val_target)
+                    total_loss += val_loss.item()
+                    
+                    _, predicted = torch.max(val_output.data, 1)
+                    _, target_labels = torch.max(val_target.data, 1)
+                    total += target_labels.size(0)
+                    correct += (predicted == target_labels).sum().item()
+                    num_batches += 1
+                
+                accuracy = 100 * correct / total
+                avg_loss = total_loss / num_batches if num_batches > 0 else 0
+                print(f'Validation - Loss: {avg_loss:.3f}, Accuracy: {accuracy:.2f}%')
+        
+        iteration += 1
+        
+        # Stop training
+        if iteration >= stop_iteration:
+            break
+    
+    print(f'Training completed! Final iteration: {iteration}')
+    return model
 
 
 if __name__ == '__main__':
@@ -517,7 +700,7 @@ if __name__ == '__main__':
     parser_train.add_argument('--workspace', type=str, required=True, 
                               help='Directory of workspace')
     parser_train.add_argument('--model_type', type=str, required=True,
-                              choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_NewAffective', 'FeatureEmotionRegression_Cnn6_LRM'])
+                              choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_LRM', 'FeatureEmotionRegression_Cnn6_NewAffective'])
     parser_train.add_argument('--pretrained_checkpoint_path', type=str,
                               help='Path to pretrained model checkpoint')
     parser_train.add_argument('--freeze_base', action='store_true', 
@@ -542,7 +725,7 @@ if __name__ == '__main__':
     parser_inference.add_argument('--dataset_path', type=str, required=True,
                                   help='Path to emotion dataset HDF5 file')
     parser_inference.add_argument('--model_type', type=str, required=True,
-                                  choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_NewAffective', 'FeatureEmotionRegression_Cnn6_LRM'])
+                                  choices=['FeatureEmotionRegression_Cnn14', 'EmotionRegression_Cnn14', 'FeatureEmotionRegression_Cnn6', 'EmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_LRM', 'FeatureEmotionRegression_Cnn6_NewAffective'])
     parser_inference.add_argument('--batch_size', type=int, default=32)
     parser_inference.add_argument('--cuda', action='store_true')
     parser_inference.add_argument('--forward_passes', type=int, default=2,
@@ -554,5 +737,7 @@ if __name__ == '__main__':
         train(args)
     elif args.mode == 'inference':
         inference(args)
+    elif args.mode == 'train_genre':
+        train_genre(args.dataset_path, args.workspace, args.holdout_fold, args.model_type, args.pretrained_checkpoint_path, args.freeze_base, args.loss_type, args.augmentation, args.learning_rate, args.batch_size, args.resume_iteration, args.stop_iteration, args.cuda, args.gpu_id)
     else:
         raise ValueError('Invalid mode!') 

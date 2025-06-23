@@ -17,9 +17,9 @@ sys.path.insert(1, os.path.join(sys.path[0], 'pytorch'))
 
 import torch
 import numpy as np
-from config import sample_rate, mel_bins, fmin, fmax, window_size, hop_size, cnn6_config
-from models_lrm import FeatureEmotionRegression_Cnn6_LRM
-from models import FeatureEmotionRegression_Cnn6
+from src.utils.config import sample_rate, mel_bins, fmin, fmax, window_size, hop_size, cnn6_config
+from src.models.emotion_models import FeatureEmotionRegression_Cnn6_LRM
+from src.models.cnn_models import FeatureEmotionRegression_Cnn6
 
 def compare_models():
     """Compare standard and feedback-enabled models."""

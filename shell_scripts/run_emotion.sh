@@ -69,7 +69,7 @@ else
 fi
 
 # Path to pretrained PANNs model (download from PANNs repository)
-PRETRAINED_MODEL="pretrained_model/Cnn6_mAP=0.343.pth"  # Cnn6 model
+PRETRAINED_MODEL="/DATA/pliu/EmotionData/Cnn6_mAP=0.343.pth"  # Cnn6 model
 # PRETRAINED_MODEL="pretrained_model/Cnn14_mAP=0.431.pth"  # Cnn14 model (alternative)
 
 # =============================================================================
@@ -120,7 +120,7 @@ if [ "$SKIP_EXTRACTION" = true ]; then
 else
     echo "Step 1: Extracting features from Emo-Soundscapes dataset..."
 
-    python extract_emotion_features.py \
+    PYTHONPATH=. python3 scripts/extract_features.py \
         --audio_dir "$EMO_AUDIO_DIR" \
         --ratings_dir "$EMO_RATINGS_DIR" \
         --output_dir "$WORKSPACE/features"
@@ -140,7 +140,7 @@ fi
 
 echo "Step 1.5: Validating data split (checking for data leakage)..."
 
-python test_data_split.py "$FEATURE_FILE"
+PYTHONPATH=. python3 tests/test_data_split.py "$FEATURE_FILE"
 
 if [ $? -ne 0 ]; then
     echo "Error: Data split validation failed!"
@@ -151,7 +151,7 @@ echo "Data split validation passed!"
 
 echo "Step 1.6: Testing evaluation system..."
 
-python test_emotion_evaluation.py
+PYTHONPATH=. python3 tests/test_emotion_evaluation.py
 
 if [ $? -ne 0 ]; then
     echo "Warning: Evaluation system test had issues (but continuing...)"
@@ -191,7 +191,7 @@ echo "🎯 Training for $EPOCHS epochs with batch size $BATCH_SIZE"
 echo "Using mixup augmentation (forced on for fair comparison)"
 AUGMENTATION="mixup"
 
-python pytorch/emotion_main.py train \
+PYTHONPATH=. python3 scripts/train.py \
     --dataset_path "$FEATURE_FILE" \
     --workspace "$WORKSPACE" \
     --model_type "FeatureEmotionRegression_Cnn6_NewAffective" \
@@ -243,7 +243,7 @@ else
     echo "⚠️  Best model not found, using latest checkpoint: $CHECKPOINT_TO_USE"
 fi
 
-python pytorch/emotion_main.py inference \
+PYTHONPATH=. python3 scripts/evaluate.py \
     --model_path "$CHECKPOINT_TO_USE" \
     --dataset_path "$FEATURE_FILE" \
     --model_type "FeatureEmotionRegression_Cnn6_NewAffective" \

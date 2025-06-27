@@ -5,9 +5,11 @@ matplotlib>=3.7.0
 h5py>=3.8.0
 torchlibrosa>=0.0.9
 IPython>=8.12.0
-pandas
-tqdm
-torchvision
-scikit-learn
-scipy
-seaborn 
+pandas>=1.5.0
+tqdm>=4.64.0
+torchvision>=0.15.0
+scikit-learn>=1.3.0
+scipy>=1.10.0
+seaborn>=0.12.0
+soundfile>=0.12.0
+yt-dlp>=2023.0.0 

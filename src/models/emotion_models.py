@@ -576,10 +576,10 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
                 steering_signals=None, first_pass_steering=False, active_connections=None,
                 return_list=False):
         """
-        Forward pass with LRM feedback implementation.
+        Forward pass with LRM feedback implementation for full-length audios.
         
         Args:
-            input: (batch_size, time_steps, mel_bins) pre-computed features
+            input: (batch_size, time_steps, mel_bins) pre-computed features from full audio
             mixup_lambda: float, mixup parameter
             forward_passes: int, number of forward passes
             return_all_passes: bool, return outputs from all passes (legacy parameter)
@@ -636,6 +636,12 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         # Clear any previous stored activations before starting
         self.lrm.clear_stored_activations()
         
+        # For full-length audios, we compute feedback signals once and reuse them
+        # This ensures consistent feedback across all passes since there are no segments
+        feedback_computed = False
+        stored_valence_128d = None
+        stored_arousal_128d = None
+        
         # Multiple forward passes with feedback
         for pass_idx in range(num_passes):
             # Apply external steering signals if provided
@@ -660,9 +666,18 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
             arousal_128d = self.affective_arousal[2:4](arousal_256d)      # Linear(256,128) + ReLU
             arousal_out = self.affective_arousal[4](arousal_128d)         # Linear(128,1)
             
-            # Store 128D feedback signals for LRM modulation
-            self.valence_128d = valence_128d
-            self.arousal_128d = arousal_128d
+            # For full-length audios: compute feedback signals once and reuse
+            if not feedback_computed:
+                # Store 128D feedback signals for LRM modulation (computed once)
+                self.valence_128d = valence_128d
+                self.arousal_128d = arousal_128d
+                stored_valence_128d = valence_128d
+                stored_arousal_128d = arousal_128d
+                feedback_computed = True
+            else:
+                # Use stored feedback signals for consistency across passes
+                self.valence_128d = stored_valence_128d
+                self.arousal_128d = stored_arousal_128d
             
             # Create output for this pass
             output = {
@@ -678,15 +693,15 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
                 if steering_signals is not None and not first_pass_steering:
                     # External steering signals will be applied in next pass
                     # Still store internal feedback for LRM modulation
-                    self._store_feedback_signals(valence_128d, arousal_128d)
+                    self._store_feedback_signals(stored_valence_128d, stored_arousal_128d)
                 elif external_feedback is not None:
                     # Use legacy external feedback if provided
-                    ext_valence_128d = external_feedback.get('valence', valence_128d)
-                    ext_arousal_128d = external_feedback.get('arousal', arousal_128d)
+                    ext_valence_128d = external_feedback.get('valence', stored_valence_128d)
+                    ext_arousal_128d = external_feedback.get('arousal', stored_arousal_128d)
                     self._store_feedback_signals(ext_valence_128d, ext_arousal_128d)
                 else:
-                    # Use internal predictions (default behavior)
-                    self._store_feedback_signals(valence_128d, arousal_128d)
+                    # Use stored internal predictions for consistency (full-length audio approach)
+                    self._store_feedback_signals(stored_valence_128d, stored_arousal_128d)
         
         # Reset modulation strength if it was adjusted
         if modulation_strength is not None:

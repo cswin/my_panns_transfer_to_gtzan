@@ -6,6 +6,9 @@
 # - Valence modulates semantic processing (higher conv layers)  
 # - Arousal modulates attention to acoustic details (lower conv layers)
 #
+# For full-length audios: Feedback signals are computed once and reused across passes
+# ensuring consistent modulation since there are no segments anymore.
+#
 # Usage:
 #   bash run_emotion_feedback.sh                    # Run full pipeline (extract + train + eval)
 #   bash run_emotion_feedback.sh --skip-extraction  # Skip feature extraction, use existing features
@@ -77,15 +80,15 @@ PRETRAINED_MODEL="/DATA/pliu/EmotionData/Cnn6_mAP=0.343.pth"  # Cnn6 model
 # Training Configuration for 12GB GPU with Feedback
 # =============================================================================
 
-# Updated configuration for epoch-based training with feedback
-BATCH_SIZE=32        # Optimized batch size for stable feedback training
+# Updated configuration for epoch-based training with feedback and full-length audios
+BATCH_SIZE=16        # Reduced batch size for full-length audios (memory considerations)
 EPOCHS=100           # More intuitive than iterations
 LEARNING_RATE=0.001  # Higher learning rate for feedback model convergence
 
 # Calculate approximate iterations for 100 epochs
-# Assuming ~2000 training samples: 2000/48 ≈ 42 iterations/epoch
-# 100 epochs ≈ 4200 iterations (will auto-adjust based on actual dataset size)
-STOP_ITERATION=20000  # Extended training for better convergence
+# Assuming ~1200 audio files: 1200/16 ≈ 75 iterations/epoch
+# 100 epochs ≈ 7500 iterations (will auto-adjust based on actual dataset size)
+STOP_ITERATION=15000  # Extended training for better convergence
 
 # Feedback model configuration
 MODEL_TYPE="FeatureEmotionRegression_Cnn6_LRM"
@@ -94,12 +97,13 @@ FORWARD_PASSES=2  # Number of feedback iterations
 echo "🔄 Setting up Emotion Regression with ORIGINAL LRM TOP-DOWN FEEDBACK..."
 echo "🚀 Training Configuration:"
 echo "  - Model: $MODEL_TYPE (Original LRM Implementation)"
-echo "  - Batch Size: $BATCH_SIZE (optimized for stable feedback training)"
+echo "  - Batch Size: $BATCH_SIZE (optimized for full-length audios)"
 echo "  - Target Epochs: $EPOCHS"
 echo "  - Estimated Iterations: $STOP_ITERATION"
 echo "  - Forward Passes: $FORWARD_PASSES"
 echo "  - Learning Rate: $LEARNING_RATE"
 echo "  - Advanced Features: Normalization, Squashing, Asymmetric Modulation"
+echo "  - Full-Length Audio: Consistent feedback signals across passes"
 echo ""
 
 # =============================================================================
@@ -111,6 +115,7 @@ echo "Model: $MODEL_TYPE (Original LRM Implementation)"
 echo "Forward Passes: $FORWARD_PASSES"
 echo "Batch Size: $BATCH_SIZE"
 echo "Advanced Features: Normalization, Squashing, Asymmetric Modulation"
+echo "Full-Length Audio: Consistent feedback signals across passes"
 echo ""
 
 # Check if audio directory exists
@@ -149,8 +154,9 @@ echo "✅ Setup validation passed!"
 if [ "$SKIP_EXTRACTION" = true ]; then
     echo "⏭️  Skipping feature extraction (--skip-extraction flag provided)"
     echo "Using existing features at $FEATURE_FILE"
+    echo "✅ Using full-length audio features (no segments)"
 else
-    echo "Step 1: Extracting features from Emo-Soundscapes dataset..."
+    echo "Step 1: Extracting features from Emo-Soundscapes dataset (full-length audios)..."
 
     PYTHONPATH=. python3 scripts/extract_features.py \
         --audio_dir "$EMO_AUDIO_DIR" \
@@ -206,15 +212,12 @@ else
 fi
 
 # =============================================================================
-# Training with Feedback
+# Training
 # =============================================================================
 
-echo ""
-echo "🚀 Step 2: Training emotion regression model with TOP-DOWN FEEDBACK..."
+echo "Step 2: Training emotion regression model with LRM feedback..."
 echo "🎯 Training for $EPOCHS epochs with batch size $BATCH_SIZE"
-echo "Model: $MODEL_TYPE"
-echo "Forward Passes: $FORWARD_PASSES"
-echo ""
+echo "🔄 Using $FORWARD_PASSES forward passes with feedback"
 
 # Force mixup augmentation for consistent comparison
 echo "Using mixup augmentation (forced on for fair comparison)"
@@ -228,127 +231,70 @@ PYTHONPATH=. python3 scripts/train.py \
     --freeze_base \
     --loss_type "mse" \
     --augmentation "$AUGMENTATION" \
-    --learning_rate $LEARNING_RATE \
-    --batch_size $BATCH_SIZE \
-    --stop_iteration $STOP_ITERATION \
-    --forward_passes $FORWARD_PASSES \
-    --cuda
+    --learning_rate "$LEARNING_RATE" \
+    --batch_size "$BATCH_SIZE" \
+    --stop_iteration "$STOP_ITERATION" \
+    --forward_passes "$FORWARD_PASSES" \
+    --cuda \
+    --gpu_id 0
 
-echo "✅ Training with feedback completed!"
-
-echo ""
-echo "=== Training Notes ==="
-echo "- Model: $MODEL_TYPE (LRM with TOP-DOWN FEEDBACK)"
-echo "- Epochs: $EPOCHS (approx)"
-echo "- Batch Size: $BATCH_SIZE (optimized for stable feedback training)"
-echo "- Forward Passes: $FORWARD_PASSES"
-echo "- Architecture: CNN6 + LRM feedback connections"
-echo "- Feedback: Valence→semantic processing, Arousal→acoustic details"
-
-# =============================================================================
-# Evaluation with Feedback
-# =============================================================================
-
-echo "🎯 Step 3: Evaluating feedback model with CSV export and visualizations..."
-
-# Find the best model checkpoint (preferred for LRM models) or latest checkpoint as fallback
-BEST_MODEL_PATH=$(find "$WORKSPACE/checkpoints" -name "best_model.pth" | head -n 1)
-
-if [ -n "$BEST_MODEL_PATH" ]; then
-    CHECKPOINT_TO_USE="$BEST_MODEL_PATH"
-    echo "Using BEST model checkpoint: $CHECKPOINT_TO_USE"
-else
-    # Fallback to latest checkpoint if best model not found
-    LATEST_CHECKPOINT=$(find "$WORKSPACE/checkpoints" -name "*.pth" | sort -V | tail -n 1)
-    if [ -z "$LATEST_CHECKPOINT" ]; then
-        echo "No checkpoint found for evaluation!"
-        exit 1
-    fi
-    CHECKPOINT_TO_USE="$LATEST_CHECKPOINT"
-    echo "⚠️  Best model not found, using latest checkpoint: $CHECKPOINT_TO_USE"
+# Check if training was successful
+if [ $? -ne 0 ]; then
+    echo "Error: Training failed!"
+    exit 1
 fi
+
+echo "Training completed successfully!"
+
+# =============================================================================
+# Evaluation
+# =============================================================================
+
+echo "Step 3: Evaluating trained feedback model..."
+
+# Use the evaluation script's built-in best model detection
+echo "🔍 Auto-detecting best model for evaluation..."
 
 PYTHONPATH=. python3 scripts/evaluate.py \
-    --model_path "$CHECKPOINT_TO_USE" \
     --dataset_path "$FEATURE_FILE" \
+    --workspace "$WORKSPACE" \
     --model_type "$MODEL_TYPE" \
-    --batch_size 32 \
+    --use_best_model \
+    --batch_size "$BATCH_SIZE" \
     --forward_passes "$FORWARD_PASSES" \
-    --cuda
+    --cuda \
+    --gpu_id 0
 
-echo "✅ Evaluation completed!"
-
-# Check if predictions were generated
-PREDICTIONS_DIR="$WORKSPACE/predictions"
-
-if [ -d "$PREDICTIONS_DIR" ]; then
-    echo ""
-    echo "📊 === Generated Files ==="
-    echo "Predictions saved in: $PREDICTIONS_DIR"
-    echo "- segment_predictions.csv: Segment-level predictions with time information"
-    echo "- audio_predictions.csv: Audio-level aggregated predictions"
-    echo "- plots/: Visualization plots including:"
-    echo "  - audio_scatter_plots.png: True vs predicted scatter plots (audio-level)"
-    echo "  - segment_scatter_plots.png: True vs predicted scatter plots (segment-level)"
-    echo "  - time_series_sample.png: Sample time-series plots"
-    echo "  - individual_timeseries/: Individual time-series for each audio file"
-    echo "  - summary_statistics.png: Error distributions and performance analysis"
-else
-    echo "⚠️  Warning: Predictions directory not found. Visualizations may not have been generated."
+if [ $? -ne 0 ]; then
+    echo "Error: Evaluation failed!"
+    exit 1
 fi
 
-# =============================================================================
-# Comparison with Standard Model (if available)
-# =============================================================================
-
-echo ""
-echo "💡 === Feedback Model vs Standard Model ==="
-echo ""
-
-STANDARD_WORKSPACE="workspaces/emotion_regression"
-STANDARD_PREDICTIONS="$STANDARD_WORKSPACE/predictions"
-
-if [ -d "$STANDARD_PREDICTIONS" ]; then
-    echo "📈 Performance Comparison Available:"
-    echo "- Feedback Model Results: $PREDICTIONS_DIR"
-    echo "- Standard Model Results: $STANDARD_PREDICTIONS"
-    echo ""
-    echo "To compare results, examine the CSV files in both directories"
-    echo "Key metrics to compare:"
-    echo "  - Audio Mean MAE (lower is better)"
-    echo "  - Audio Mean Pearson (higher is better)"
-    echo "  - Valence/Arousal individual performance"
-else
-    echo "🔍 To compare with standard model:"
-    echo "  1. Run: bash run_emotion.sh --skip-extraction"
-    echo "  2. Compare results in both workspace directories"
-fi
+echo "Evaluation completed successfully!"
 
 # =============================================================================
-# Usage Information
+# Summary
 # =============================================================================
 
 echo ""
-echo "🎉 === Feedback Training Complete ==="
-echo "Workspace: $WORKSPACE"
-echo "Model: $MODEL_TYPE"
-echo "Forward Passes: $FORWARD_PASSES"
+echo "🎉 Feedback Pipeline completed successfully!"
 echo ""
-echo "📁 Generated Files:"
-echo "- Model checkpoints: $WORKSPACE/checkpoints"
-echo "- Training logs: $WORKSPACE/logs"
-echo "- Training statistics: $WORKSPACE/statistics"
-echo "- Predictions: $WORKSPACE/predictions"
+echo "Summary:"
+echo "  - Features extracted from full-length audios"
+echo "  - LRM feedback model trained for $EPOCHS epochs"
+echo "  - $FORWARD_PASSES forward passes with consistent feedback signals"
+echo "  - Final evaluation completed"
 echo ""
-echo "🔧 To resume training from a checkpoint:"
-echo "python pytorch/emotion_main.py train --resume_iteration <iteration> \\"
-echo "    --model_type $MODEL_TYPE --forward_passes $FORWARD_PASSES [other args...]"
+echo "Results are available in:"
+echo "  - Checkpoints: $WORKSPACE/checkpoints"
+echo "  - Logs: $WORKSPACE/logs"
+echo "  - Statistics: $WORKSPACE/statistics"
 echo ""
-echo "📊 To evaluate a specific checkpoint:"
-echo "python pytorch/emotion_main.py inference --model_path <checkpoint_path> \\"
-echo "    --model_type $MODEL_TYPE --forward_passes $FORWARD_PASSES [other args...]"
+echo "Key Features of LRM Feedback Model:"
+echo "  - Top-down feedback from valence/arousal to visual processing"
+echo "  - Consistent feedback signals across multiple passes"
+echo "  - Normalization, squashing, and asymmetric modulation"
+echo "  - Full-length audio processing (no segments)"
 echo ""
-echo "🧪 To test different feedback configurations:"
-echo "  - Modify FORWARD_PASSES in this script (try 1, 2, 3, or 4)"
-echo "  - Adjust BATCH_SIZE if memory issues occur"
-echo "  - Compare results with standard model using run_emotion.sh" 
+echo "To run inference on new audio files, use:"
+echo "  python3 scripts/evaluate.py --use_best_model --workspace $WORKSPACE --model_type $MODEL_TYPE --audio_file your_audio.wav" 

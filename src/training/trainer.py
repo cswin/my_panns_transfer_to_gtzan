@@ -77,6 +77,15 @@ def train(args):
     else:
         logging.info('Using CPU. Set --cuda flag to use GPU.')
     
+    # Set CUDA device and use only one GPU
+    if args.cuda and torch.cuda.is_available():
+        torch.cuda.set_device(args.gpu_id)
+        device = f'cuda:{args.gpu_id}'
+        logging.info(f'Using GPU {args.gpu_id}: {torch.cuda.get_device_name(args.gpu_id)}')
+    else:
+        device = 'cpu'
+        logging.info('Using CPU')
+
     # Model
     if args.model_type == 'FeatureEmotionRegression_Cnn14':
         config = cnn14_config
@@ -148,25 +157,22 @@ def train(args):
     # Load pretrained weights
     if pretrained_checkpoint_path:
         logging.info(f'Loading pretrained model from {pretrained_checkpoint_path}')
-        if model_type == 'FeatureAffectiveCnn6':
-            model.load_visual_pretrain(pretrained_checkpoint_path)
-        else:
-            model.load_from_pretrain(pretrained_checkpoint_path)
+        model.load_from_pretrain(pretrained_checkpoint_path)
 
     # Resume training
     if resume_iteration:
         resume_checkpoint_path = os.path.join(checkpoints_dir, '{}_iterations.pth'.format(resume_iteration))
         logging.info('Loading resume model from {}'.format(resume_checkpoint_path))
-        resume_checkpoint = torch.load(resume_checkpoint_path, weights_only=False)
+        resume_checkpoint = torch.load(resume_checkpoint_path, weights_only=False, map_location='cpu')
         model.load_state_dict(resume_checkpoint['model'])
         statistics_container.load_state_dict(resume_iteration)
         iteration = resume_checkpoint['iteration']
     else:
         iteration = 0
 
-    # Parallel training
-    print('GPU number: {}'.format(torch.cuda.device_count()))
-    model = torch.nn.DataParallel(model)
+    # Single GPU training (no DataParallel)
+    print('Using single GPU: {}'.format(device))
+    model = model.to(device)
 
     # Dataset
     dataset = EmoSoundscapesDataset()
@@ -194,9 +200,6 @@ def train(args):
         collate_fn=emotion_collate_fn, 
         num_workers=8, 
         pin_memory=True)
-
-    if 'cuda' in device:
-        model.to(device)
 
     # Optimizer - use same settings for both models for fair comparison
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, 
@@ -263,9 +266,15 @@ def train(args):
                 logging.info('Validate Audio Valence Pearson: {:.4f}, Arousal Pearson: {:.4f}'.format(
                     statistics['audio_valence_pearson'], statistics['audio_arousal_pearson']))
                 
-                # Also log segment-level for comparison
-                logging.info('Validate Segment Mean MAE: {:.4f}'.format(statistics['segment_mean_mae']))
-                logging.info('Validate Segment Mean Pearson: {:.4f}'.format(statistics['segment_mean_pearson']))
+                # Log segment-level metrics only if they exist (for segmented data)
+                if 'segment_mean_mae' in statistics:
+                    logging.info('Validate Segment Mean MAE: {:.4f}'.format(statistics['segment_mean_mae']))
+                    logging.info('Validate Segment Mean Pearson: {:.4f}'.format(statistics['segment_mean_pearson']))
+                elif 'audio_mean_mae' in statistics:
+                    # For full-length audios, we have audio_ metrics instead of segment_ metrics
+                    logging.info('Using full-length audio format (no segments)')
+                else:
+                    logging.info('No segment or audio metrics found in statistics')
 
                 # Append statistics
                 statistics_container.append(iteration, statistics, data_type='validate')
@@ -281,7 +290,7 @@ def train(args):
                     best_model_path = os.path.join(checkpoints_dir, 'best_model.pth')
                     checkpoint = {
                         'iteration': iteration, 
-                        'model': model.module.state_dict(), 
+                        'model': model.state_dict(), 
                         'optimizer': optimizer.state_dict(),
                         'best_val_pearson': best_val_pearson}
                     torch.save(checkpoint, best_model_path)
@@ -306,7 +315,7 @@ def train(args):
             checkpoint_path = os.path.join(checkpoints_dir, '{}_iterations.pth'.format(iteration))
             checkpoint = {
                 'iteration': iteration, 
-                'model': model.module.state_dict(), 
+                'model': model.state_dict(), 
                 'optimizer': optimizer.state_dict()}
 
             torch.save(checkpoint, checkpoint_path)
@@ -351,14 +360,26 @@ def train(args):
 
 def do_mixup_emotion(x, valence_target, arousal_target, mixup_augmenter):
     """Apply mixup augmentation for emotion regression."""
-    mixup_lambda = mixup_augmenter.get_lambda(batch_size=len(x))
+    batch_size = len(x)
     
-    # Apply mixup to features
-    x = do_mixup(x, mixup_lambda)
+    # Ensure batch size is even for mixup (drop last sample if odd)
+    if batch_size % 2 == 1:
+        # Remove the last sample to make batch size even
+        x = x[:-1]
+        valence_target = valence_target[:-1]
+        arousal_target = arousal_target[:-1]
+        batch_size = len(x)
     
-    # Apply mixup to targets
-    valence_target = do_mixup(valence_target, mixup_lambda)
-    arousal_target = do_mixup(arousal_target, mixup_lambda)
+    # Only apply mixup if we have at least 2 samples
+    if batch_size >= 2:
+        mixup_lambda = mixup_augmenter.get_lambda(batch_size)
+        
+        # Apply mixup to features
+        x = do_mixup(x, mixup_lambda)
+        
+        # Apply mixup to targets
+        valence_target = do_mixup(valence_target, mixup_lambda)
+        arousal_target = do_mixup(arousal_target, mixup_lambda)
     
     return x, valence_target, arousal_target
 
@@ -438,12 +459,11 @@ def inference(args):
         raise ValueError(f'Unknown model type: {args.model_type}')
     
     # Load checkpoint
-    checkpoint = torch.load(model_path, weights_only=False)
+    checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
     model.load_state_dict(checkpoint['model'])
     
-    model = torch.nn.DataParallel(model)
-    if 'cuda' in device:
-        model.to(device)
+    # Single GPU inference (no DataParallel)
+    model = model.to(device)
     
     # Create data loader
     dataset = EmoSoundscapesDataset()
@@ -452,12 +472,10 @@ def inference(args):
         dataset=dataset, batch_sampler=validate_sampler, 
         collate_fn=emotion_collate_fn, num_workers=8, pin_memory=True)
     
-    # Evaluate with CSV saving - use LRM evaluator for LRM models
-    if 'LRM' in args.model_type:
-        evaluator = LRMEmotionEvaluator(model=model)
-        print('Using LRM evaluator for segment-based feedback processing')
-    else:
-        evaluator = EmotionEvaluator(model=model)
+    # Evaluate with CSV saving - use regular evaluator for full-length audios
+    # LRM evaluator was designed for segment-based processing, but we now use full-length audios
+    evaluator = EmotionEvaluator(model=model)
+    print('Using standard evaluator for full-length audio processing')
     
     # Create output directory for predictions based on model path
     # Extract workspace from model path to save predictions in the same workspace
@@ -505,13 +523,15 @@ def train_genre(dataset_dir, workspace, holdout_fold, model_type, pretrained_che
                 batch_size=32, resume_iteration=0, stop_iteration=10000, cuda=True, gpu_id=0):
     """Main training function for music genre classification."""
     
-    # Set CUDA device
+    # Set CUDA device and use only one GPU
     if cuda and torch.cuda.is_available():
         torch.cuda.set_device(gpu_id)
-        device = 'cuda'
+        device = f'cuda:{gpu_id}'
+        print(f'Using GPU {gpu_id}: {torch.cuda.get_device_name(gpu_id)}')
     else:
         device = 'cpu'
-    
+        print('Using CPU')
+
     # Create directories
     checkpoints_dir = os.path.join(workspace, 'checkpoints', model_type)
     create_folder(checkpoints_dir)
@@ -522,64 +542,101 @@ def train_genre(dataset_dir, workspace, holdout_fold, model_type, pretrained_che
     logs_dir = os.path.join(workspace, 'logs', model_type)
     create_logging(logs_dir, 'w')
     
-    logging.info(f'Training music genre classification model: {model_type}')
+    logging.info(f'Training emotion regression model: {model_type}')
     logging.info(f'Dataset: {dataset_dir}')
     logging.info(f'Workspace: {workspace}')
     logging.info(f'Device: {device}')
+    logging.info(f'Learning Rate: {learning_rate}')
+    logging.info(f'Batch Size: {batch_size}')
+    logging.info(f'GPU: {gpu_id}')
     
     # Model creation
-    if model_type == 'Transfer_Cnn6':
-        config = cnn6_config
-        model = Transfer_Cnn6(
-            sample_rate=sample_rate,
-            window_size=config['window_size'],
-            hop_size=config['hop_size'],
-            mel_bins=config['mel_bins'],
-            fmin=config['fmin'],
-            fmax=config['fmax'],
-            classes_num=10,  # GTZAN has 10 genres
-            freeze_base=freeze_base
-        )
-    elif model_type == 'Transfer_Cnn14':
+    if model_type == 'FeatureEmotionRegression_Cnn14':
         config = cnn14_config
-        model = Transfer_Cnn14(
-            sample_rate=sample_rate,
-            window_size=config['window_size'],
-            hop_size=config['hop_size'],
-            mel_bins=config['mel_bins'],
-            fmin=config['fmin'],
-            fmax=config['fmax'],
-            classes_num=10,  # GTZAN has 10 genres
-            freeze_base=freeze_base
-        )
-    elif model_type == 'FeatureAffectiveCnn6':
+        model = FeatureEmotionRegression_Cnn14(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base)
+    elif model_type == 'EmotionRegression_Cnn14':
+        config = cnn14_config
+        model = EmotionRegression_Cnn14(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base)
+    elif model_type == 'FeatureEmotionRegression_Cnn6':
         config = cnn6_config
-        model = FeatureAffectiveCnn6(
-            sample_rate=sample_rate,
-            window_size=config['window_size'],
-            hop_size=config['hop_size'],
-            mel_bins=config['mel_bins'],
-            fmin=config['fmin'],
-            fmax=config['fmax'],
-            classes_num=10,  # GTZAN has 10 genres
-            freeze_visual_system=freeze_base
-        )
+        model = FeatureEmotionRegression_Cnn6(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base)
+    elif model_type == 'EmotionRegression_Cnn6':
+        config = cnn6_config
+        model = EmotionRegression_Cnn6(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base)
+    elif model_type == 'FeatureEmotionRegression_Cnn6_LRM':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_LRM(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base,
+            forward_passes=getattr(args, 'forward_passes', 2))
+    elif model_type == 'FeatureEmotionRegression_Cnn6_NewAffective':
+        config = cnn6_config
+        model = FeatureEmotionRegression_Cnn6_NewAffective(
+            sample_rate=sample_rate, 
+            window_size=config['window_size'], 
+            hop_size=config['hop_size'], 
+            mel_bins=config['mel_bins'], 
+            fmin=config['fmin'], 
+            fmax=config['fmax'], 
+            freeze_base=freeze_base)
     else:
         raise ValueError(f'Unknown model type: {model_type}')
     
     # Load pretrained weights
     if pretrained_checkpoint_path:
         logging.info(f'Loading pretrained model from {pretrained_checkpoint_path}')
-        if model_type == 'FeatureAffectiveCnn6':
-            model.load_visual_pretrain(pretrained_checkpoint_path)
-        else:
-            model.load_from_pretrain(pretrained_checkpoint_path)
+        model.load_from_pretrain(pretrained_checkpoint_path)
     
-    # Move model to device
-    if 'cuda' in device:
-        model = torch.nn.DataParallel(model)
-        model.to(device)
+    # Move model to device (single GPU)
+    model = model.to(device)
     
+    # Load resume checkpoint if specified
+    if resume_iteration > 0:
+        resume_checkpoint_path = os.path.join(checkpoints_dir, '{}_iterations.pth'.format(resume_iteration))
+        logging.info(f'Loading resume checkpoint from {resume_checkpoint_path}')
+        resume_checkpoint = torch.load(resume_checkpoint_path, weights_only=False)
+        model.load_state_dict(resume_checkpoint['model'])
+        statistics_container.load_state_dict(resume_iteration)
+        iteration = resume_checkpoint['iteration']
+    else:
+        iteration = 0
+
+    # Single GPU training (no DataParallel)
+    print('Using single GPU: {}'.format(device))
+
     # Dataset and data loaders
     dataset = GtzanDataset()
     
@@ -717,6 +774,8 @@ if __name__ == '__main__':
     parser_train.add_argument('--filename', type=str, default='emotion_main')
     parser_train.add_argument('--forward_passes', type=int, default=2,
                               help='Number of forward passes for feedback models')
+    parser_train.add_argument('--gpu_id', type=int, default=0,
+                              help='GPU ID to use')
 
     # Inference arguments
     parser_inference = subparsers.add_parser('inference')

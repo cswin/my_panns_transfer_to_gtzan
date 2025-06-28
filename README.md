@@ -136,7 +136,7 @@ PYTHONPATH=. python scripts/extract_features.py --dataset_dir /path/to/gtzan --w
 PYTHONPATH=. python scripts/train.py --dataset_dir /path/to/gtzan --workspace ./workspace --model_type Transfer_Cnn14
 
 # Evaluate model
-PYTHONPATH=. python scripts/evaluate.py --checkpoint_path ./workspace/checkpoints/model.pth --dataset_dir /path/to/gtzan
+PYTHONPATH=. python scripts/evaluate.py --use_best_model --workspace ./workspace --model_type Transfer_Cnn14 --dataset_dir /path/to/gtzan
 ```
 
 ### 😊 Emotion Analysis Training

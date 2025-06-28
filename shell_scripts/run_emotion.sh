@@ -2,7 +2,7 @@
 
 # Script to run emotion regression training on Emo-Soundscapes dataset
 # This script demonstrates how to:
-# 1. Extract features from Emo-Soundscapes audio files
+# 1. Extract features from Emo-Soundscapes audio files (full-length)
 # 2. Train a PANNs model for valence/arousal prediction
 #
 # Usage:
@@ -114,11 +114,9 @@ echo "Setup validation passed!"
 if [ "$SKIP_EXTRACTION" = true ]; then
     echo "Skipping feature extraction (--skip-extraction flag provided)"
     echo "Using existing features at $FEATURE_FILE"
-    echo "⚠️  WARNING: If you're using old features (not segmented), you may need to re-extract!"
-    echo "   The updated system expects 6 segments per audio file (7278 total samples)"
-    echo "   Old format has 1 sample per audio file (1213 total samples)"
+    echo "✅ Using full-length audio features (no segments)"
 else
-    echo "Step 1: Extracting features from Emo-Soundscapes dataset..."
+    echo "Step 1: Extracting features from Emo-Soundscapes dataset (full-length audios)..."
 
     PYTHONPATH=. python3 scripts/extract_features.py \
         --audio_dir "$EMO_AUDIO_DIR" \
@@ -163,18 +161,18 @@ fi
 # Training Configuration for 12GB GPU
 # =============================================================================
 
-# Updated configuration for epoch-based training
-BATCH_SIZE=32        # Optimized batch size for consistent comparison
+# Updated configuration for epoch-based training with full-length audios
+BATCH_SIZE=16        # Reduced batch size for full-length audios (memory considerations)
 EPOCHS=100           # More intuitive than iterations
 LEARNING_RATE=0.001  # Higher learning rate for better convergence
 
 # Calculate approximate iterations for 100 epochs
-# Assuming ~2000 training samples: 2000/48 ≈ 42 iterations/epoch
-# 100 epochs ≈ 4200 iterations (will auto-adjust based on actual dataset size)
-STOP_ITERATION=20000  # Extended training for better convergence
+# Assuming ~1200 audio files: 1200/16 ≈ 75 iterations/epoch
+# 100 epochs ≈ 7500 iterations (will auto-adjust based on actual dataset size)
+STOP_ITERATION=15000  # Extended training for better convergence
 
 echo "🚀 Training Configuration:"
-echo "  - Batch Size: $BATCH_SIZE (optimized for consistent comparison)"
+echo "  - Batch Size: $BATCH_SIZE (optimized for full-length audios)"
 echo "  - Target Epochs: $EPOCHS"
 echo "  - Estimated Iterations: $STOP_ITERATION"
 echo "  - Learning Rate: $LEARNING_RATE"
@@ -199,90 +197,61 @@ PYTHONPATH=. python3 scripts/train.py \
     --freeze_base \
     --loss_type "mse" \
     --augmentation "$AUGMENTATION" \
-    --learning_rate $LEARNING_RATE \
-    --batch_size $BATCH_SIZE \
-    --stop_iteration $STOP_ITERATION \
-    --cuda
+    --learning_rate "$LEARNING_RATE" \
+    --batch_size "$BATCH_SIZE" \
+    --stop_iteration "$STOP_ITERATION" \
+    --cuda \
+    --gpu_id 0
 
-echo "Training completed!"
+# Check if training was successful
+if [ $? -ne 0 ]; then
+    echo "Error: Training failed!"
+    exit 1
+fi
 
-echo ""
-echo "=== Training Notes ==="
-echo "- Model: FeatureEmotionRegression_Cnn6_NewAffective"
-echo "- Epochs: $EPOCHS (approx)"
-echo "- Batch Size: $BATCH_SIZE (optimized for consistent comparison)"
-echo "- Architecture: Frozen CNN6 visual system + New separate affective pathways"
-echo "- Visual System: CNN6 backbone (frozen, pretrained on AudioSet)"
-echo "- Affective System: Separate valence/arousal pathways (512→256→128→1)"
-echo "- No Feedback: Pure feedforward processing (compare with LRM feedback model)"
-echo "- Model uses 70% train / 30% validation split by audio files"
-echo "- Validation metrics are computed at both segment-level and audio-level"
-echo "- Audio-level metrics (aggregated) are the primary evaluation metrics"
-echo "- Look for 'Audio Mean MAE' and 'Audio Mean Pearson' in logs for best indicators"
+echo "Training completed successfully!"
 
 # =============================================================================
 # Evaluation
 # =============================================================================
 
-echo "Step 3: Evaluating trained model with CSV export and visualizations..."
+echo "Step 3: Evaluating trained model..."
 
-# Find the best model checkpoint (preferred) or latest checkpoint as fallback
-BEST_MODEL_PATH=$(find "$WORKSPACE/checkpoints" -name "best_model.pth" | head -n 1)
-
-if [ -n "$BEST_MODEL_PATH" ]; then
-    CHECKPOINT_TO_USE="$BEST_MODEL_PATH"
-    echo "Using BEST model checkpoint: $CHECKPOINT_TO_USE"
-else
-    # Fallback to latest checkpoint if best model not found
-    LATEST_CHECKPOINT=$(find "$WORKSPACE/checkpoints" -name "*.pth" | sort -V | tail -n 1)
-    if [ -z "$LATEST_CHECKPOINT" ]; then
-        echo "No checkpoint found for evaluation!"
-        exit 1
-    fi
-    CHECKPOINT_TO_USE="$LATEST_CHECKPOINT"
-    echo "⚠️  Best model not found, using latest checkpoint: $CHECKPOINT_TO_USE"
-fi
+# Use the evaluation script's built-in best model detection
+echo "🔍 Auto-detecting best model for evaluation..."
 
 PYTHONPATH=. python3 scripts/evaluate.py \
-    --model_path "$CHECKPOINT_TO_USE" \
     --dataset_path "$FEATURE_FILE" \
+    --workspace "$WORKSPACE" \
     --model_type "FeatureEmotionRegression_Cnn6_NewAffective" \
-    --batch_size 32 \
-    --cuda
+    --use_best_model \
+    --batch_size "$BATCH_SIZE" \
+    --cuda \
+    --gpu_id 0
 
-echo "Evaluation completed!"
-
-# Check if predictions were generated
-PREDICTIONS_DIR="$WORKSPACE/predictions"
-
-if [ -d "$PREDICTIONS_DIR" ]; then
-    echo ""
-    echo "=== Generated Files ==="
-    echo "Predictions saved in: $PREDICTIONS_DIR"
-    echo "- segment_predictions.csv: Segment-level predictions with time information"
-    echo "- audio_predictions.csv: Audio-level aggregated predictions"
-    echo "- plots/: Visualization plots including:"
-    echo "  - audio_scatter_plots.png: True vs predicted scatter plots (audio-level)"
-    echo "  - segment_scatter_plots.png: True vs predicted scatter plots (segment-level)"
-    echo "  - time_series_sample.png: Sample time-series plots"
-    echo "  - individual_timeseries/: Individual time-series for each audio file"
-    echo "  - summary_statistics.png: Error distributions and performance analysis"
-else
-    echo "Warning: Predictions directory not found. Visualizations may not have been generated."
+if [ $? -ne 0 ]; then
+    echo "Error: Evaluation failed!"
+    exit 1
 fi
 
+echo "Evaluation completed successfully!"
+
 # =============================================================================
-# Usage Information
+# Summary
 # =============================================================================
 
 echo ""
-echo "=== Training Complete ==="
-echo "Model checkpoints saved in: $WORKSPACE/checkpoints"
-echo "Training logs saved in: $WORKSPACE/logs"
-echo "Training statistics saved in: $WORKSPACE/statistics"
+echo "🎉 Pipeline completed successfully!"
 echo ""
-echo "To resume training from a checkpoint, use:"
-echo "python pytorch/emotion_main.py train --resume_iteration <iteration> [other args...]"
+echo "Summary:"
+echo "  - Features extracted from full-length audios"
+echo "  - Model trained for $EPOCHS epochs"
+echo "  - Final evaluation completed"
 echo ""
-echo "To evaluate a specific checkpoint, use:"
-echo "python pytorch/emotion_main.py inference --model_path <checkpoint_path> [other args...]" 
+echo "Results are available in:"
+echo "  - Checkpoints: $WORKSPACE/checkpoints"
+echo "  - Logs: $WORKSPACE/logs"
+echo "  - Statistics: $WORKSPACE/statistics"
+echo ""
+echo "To run inference on new audio files, use:"
+echo "  python3 scripts/evaluate.py --use_best_model --workspace $WORKSPACE --model_type FeatureEmotionRegression_Cnn6_NewAffective --audio_file your_audio.wav" 

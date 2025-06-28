@@ -15,6 +15,8 @@ EXCLUDES=(
     "venv"
     "*.egg-info"
     "workspaces"
+    "*.log"
+    "datasets"
 )
 
 # Build exclude arguments

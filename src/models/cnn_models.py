@@ -175,7 +175,8 @@ class Transfer_Cnn14(nn.Module):
         init_layer(self.fc_transfer)
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
+        """Load pretrained weights from AudioSet checkpoint."""
+        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False, map_location='cpu')
         self.base.load_state_dict(checkpoint['model'])
 
     def forward(self, input, mixup_lambda=None):
@@ -355,24 +356,20 @@ class Transfer_Cnn6(nn.Module):
         init_layer(self.fc_transfer)
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
-        # Convert old model state dict to new model structure
-        if 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        else:
-            state_dict = checkpoint
-            
-        # Remove 'module.' prefix if present (from DataParallel)
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith('module.'):
-                k = k[7:]  # remove 'module.' prefix
-            # Skip loading the batch norm parameters since we've replaced it
-            if not k.startswith('bn0.'):
-                new_state_dict[k] = v
-            
-        self.base.load_state_dict(new_state_dict, strict=False)
-        print("Pretrained model loaded with some missing keys (this is expected for transfer learning)")
+        """Load pretrained weights, excluding spectrogram/logmel extractors."""
+        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False, map_location='cpu')
+        pretrained_dict = checkpoint['model']
+        
+        # Remove spectrogram and logmel extractor weights
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() 
+                          if not k.startswith('spectrogram_extractor') 
+                          and not k.startswith('logmel_extractor')}
+        
+        # Load remaining weights
+        model_dict = self.base.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        self.base.load_state_dict(model_dict)
 
     def forward(self, input, mixup_lambda=None):
         """Input: (batch_size, data_length)
@@ -415,24 +412,20 @@ class FeatureTransfer_Cnn6(Transfer_Cnn6):
         self.base.bn0.num_batches_tracked = torch.tensor(0)
         
     def load_from_pretrain(self, pretrained_checkpoint_path):
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
-        # Convert old model state dict to new model structure
-        if 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        else:
-            state_dict = checkpoint
-            
-        # Remove 'module.' prefix if present (from DataParallel)
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith('module.'):
-                k = k[7:]  # remove 'module.' prefix
-            # Skip loading ANY batch norm related parameters
-            if not k.startswith('bn0.'):
-                new_state_dict[k] = v
-                
-        self.base.load_state_dict(new_state_dict, strict=False)
-        print("Pretrained model loaded with some missing keys (this is expected for transfer learning)")
+        """Load pretrained weights, excluding spectrogram/logmel extractors."""
+        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False, map_location='cpu')
+        pretrained_dict = checkpoint['model']
+        
+        # Remove spectrogram and logmel extractor weights
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() 
+                          if not k.startswith('spectrogram_extractor') 
+                          and not k.startswith('logmel_extractor')}
+        
+        # Load remaining weights
+        model_dict = self.base.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        self.base.load_state_dict(model_dict)
         
         # Re-replace the batch norm layer after loading pretrained weights
         self._replace_batch_norm()
@@ -747,7 +740,7 @@ class EmotionRegression_Cnn14(nn.Module):
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
         """Load pretrained weights from AudioSet checkpoint."""
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
+        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False, map_location='cpu')
         self.base.load_state_dict(checkpoint['model'])
 
     def forward(self, input, mixup_lambda=None):
@@ -914,7 +907,7 @@ class EmotionRegression_Cnn6(nn.Module):
 
     def load_from_pretrain(self, pretrained_checkpoint_path):
         """Load pretrained weights from AudioSet checkpoint."""
-        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False)
+        checkpoint = torch.load(pretrained_checkpoint_path, weights_only=False, map_location='cpu')
         self.base.load_state_dict(checkpoint['model'])
 
     def forward(self, input, mixup_lambda=None):

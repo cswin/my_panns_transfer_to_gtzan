@@ -53,33 +53,58 @@ class EmotionEvaluator(object):
             output_dict: dict containing predictions and targets
             output_dir: directory to save CSV files
         """
-        # Save segment-level predictions
-        segment_df = pd.DataFrame({
-            'audio_name': output_dict['audio_name'],
-            'valence_true': output_dict['valence_target'],
-            'valence_pred': output_dict['valence_pred'],
-            'arousal_true': output_dict['arousal_target'],
-            'arousal_pred': output_dict['arousal_pred']
-        })
+        # Detect if we're using full-length audios or segments
+        is_full_length_audio = self._is_full_length_audio_format(output_dict['audio_name'])
         
-        # Add segment index and base audio name
-        segment_df['base_audio'] = segment_df['audio_name'].apply(
-            lambda x: (x.decode() if isinstance(x, bytes) else x).split('_seg')[0] if '_seg' in (x.decode() if isinstance(x, bytes) else x) else (x.decode() if isinstance(x, bytes) else x)
-        )
-        segment_df['segment_idx'] = segment_df['audio_name'].apply(
-            lambda x: int((x.decode() if isinstance(x, bytes) else x).split('_seg')[1]) if '_seg' in (x.decode() if isinstance(x, bytes) else x) else 0
-        )
-        
-        segment_csv_path = os.path.join(output_dir, 'segment_predictions.csv')
-        segment_df.to_csv(segment_csv_path, index=False)
-        print(f"Segment-level predictions saved to: {segment_csv_path}")
-        
-        # Create audio-level aggregated predictions
-        audio_df = self._create_audio_level_dataframe(output_dict)
-        audio_csv_path = os.path.join(output_dir, 'audio_predictions.csv')
-        audio_df.to_csv(audio_csv_path, index=False)
-        print(f"Audio-level predictions saved to: {audio_csv_path}")
-        
+        if is_full_length_audio:
+            # For full-length audios: save directly as audio-level predictions
+            audio_df = pd.DataFrame({
+                'audio_name': [name.decode() if isinstance(name, bytes) else name 
+                              for name in output_dict['audio_name']],
+                'valence_true': output_dict['valence_target'],
+                'valence_pred': output_dict['valence_pred'],
+                'arousal_true': output_dict['arousal_target'],
+                'arousal_pred': output_dict['arousal_pred']
+            })
+            
+            audio_csv_path = os.path.join(output_dir, 'audio_predictions.csv')
+            audio_df.to_csv(audio_csv_path, index=False)
+            print(f"Audio-level predictions saved to: {audio_csv_path}")
+            
+            # For compatibility, also save as segment-level (same data)
+            segment_csv_path = os.path.join(output_dir, 'segment_predictions.csv')
+            audio_df.to_csv(segment_csv_path, index=False)
+            print(f"Segment-level predictions saved to: {segment_csv_path} (same as audio-level)")
+            
+        else:
+            # For segmented data: save both segment-level and aggregated audio-level
+            # Save segment-level predictions
+            segment_df = pd.DataFrame({
+                'audio_name': output_dict['audio_name'],
+                'valence_true': output_dict['valence_target'],
+                'valence_pred': output_dict['valence_pred'],
+                'arousal_true': output_dict['arousal_target'],
+                'arousal_pred': output_dict['arousal_pred']
+            })
+            
+            # Add segment index and base audio name
+            segment_df['base_audio'] = segment_df['audio_name'].apply(
+                lambda x: (x.decode() if isinstance(x, bytes) else x).split('_seg')[0] if '_seg' in (x.decode() if isinstance(x, bytes) else x) else (x.decode() if isinstance(x, bytes) else x)
+            )
+            segment_df['segment_idx'] = segment_df['audio_name'].apply(
+                lambda x: int((x.decode() if isinstance(x, bytes) else x).split('_seg')[1]) if '_seg' in (x.decode() if isinstance(x, bytes) else x) else 0
+            )
+            
+            segment_csv_path = os.path.join(output_dir, 'segment_predictions.csv')
+            segment_df.to_csv(segment_csv_path, index=False)
+            print(f"Segment-level predictions saved to: {segment_csv_path}")
+            
+            # Create audio-level aggregated predictions
+            audio_df = self._create_audio_level_dataframe(output_dict)
+            audio_csv_path = os.path.join(output_dir, 'audio_predictions.csv')
+            audio_df.to_csv(audio_csv_path, index=False)
+            print(f"Audio-level predictions saved to: {audio_csv_path}")
+    
     def _create_audio_level_dataframe(self, output_dict):
         """Create audio-level DataFrame by aggregating segment predictions.
         
@@ -191,18 +216,35 @@ class EmotionEvaluator(object):
         arousal_target = output_dict['arousal_target']
         audio_names = output_dict['audio_name']
         
-        # Calculate both segment-level and audio-level metrics
+        # Detect if we're using full-length audios or segments
+        is_full_length_audio = self._is_full_length_audio_format(audio_names)
+        
+        # Calculate metrics
         statistics = {}
         
-        # Segment-level metrics (current approach)
-        statistics.update(self._calculate_segment_metrics(
-            valence_pred, arousal_pred, valence_target, arousal_target, prefix='segment_'))
-        
-        # Audio-level metrics (aggregated by audio file)
-        statistics.update(self._calculate_audio_metrics(
-            valence_pred, arousal_pred, valence_target, arousal_target, audio_names, prefix='audio_'))
+        if is_full_length_audio:
+            # For full-length audios: only calculate audio-level metrics (no segments)
+            print("📊 Using full-length audio format - no aggregation needed")
+            statistics.update(self._calculate_segment_metrics(
+                valence_pred, arousal_pred, valence_target, arousal_target, prefix='audio_'))
+        else:
+            # For segmented data: calculate both segment-level and audio-level metrics
+            print("📊 Using segmented format - aggregating to audio-level")
+            statistics.update(self._calculate_segment_metrics(
+                valence_pred, arousal_pred, valence_target, arousal_target, prefix='segment_'))
+            statistics.update(self._calculate_audio_metrics(
+                valence_pred, arousal_pred, valence_target, arousal_target, audio_names, prefix='audio_'))
         
         return statistics
+    
+    def _is_full_length_audio_format(self, audio_names):
+        """Detect if the data is in full-length audio format (no segments)."""
+        # Check if any audio names contain segment suffixes
+        for name in audio_names:
+            name_str = name.decode() if isinstance(name, bytes) else name
+            if '_seg' in name_str:
+                return False
+        return True
     
     def _calculate_segment_metrics(self, valence_pred, arousal_pred, valence_target, arousal_target, prefix=''):
         """Calculate metrics at segment level."""
@@ -310,56 +352,90 @@ class EmotionEvaluator(object):
     def print_evaluation(self, statistics):
         """Print evaluation results in a formatted way."""
         
-        # Print segment-level metrics
-        print(f"Number of segments: {statistics['segment_num_samples']}")
-        print("\n=== SEGMENT-LEVEL METRICS ===")
-        print("=== Valence Metrics ===")
-        print(f"MSE:      {statistics['segment_valence_mse']:.4f}")
-        print(f"RMSE:     {statistics['segment_valence_rmse']:.4f}")
-        print(f"MAE:      {statistics['segment_valence_mae']:.4f}")
-        print(f"Pearson:  {statistics['segment_valence_pearson']:.4f}")
-        print(f"Spearman: {statistics['segment_valence_spearman']:.4f}")
-        print(f"R²:       {statistics['segment_valence_r2']:.4f}")
+        # Detect if we're using full-length audios by checking if segment metrics exist
+        # For full-length audios, we only have audio_ metrics, no segment_ metrics
+        is_full_length_audio = 'segment_num_samples' not in statistics
         
-        print("\n=== Arousal Metrics ===")
-        print(f"MSE:      {statistics['segment_arousal_mse']:.4f}")
-        print(f"RMSE:     {statistics['segment_arousal_rmse']:.4f}")
-        print(f"MAE:      {statistics['segment_arousal_mae']:.4f}")
-        print(f"Pearson:  {statistics['segment_arousal_pearson']:.4f}")
-        print(f"Spearman: {statistics['segment_arousal_spearman']:.4f}")
-        print(f"R²:       {statistics['segment_arousal_r2']:.4f}")
-        
-        print("\n=== Average Metrics ===")
-        print(f"Mean MSE:      {statistics['segment_mean_mse']:.4f}")
-        print(f"Mean RMSE:     {statistics['segment_mean_rmse']:.4f}")
-        print(f"Mean MAE:      {statistics['segment_mean_mae']:.4f}")
-        print(f"Mean Pearson:  {statistics['segment_mean_pearson']:.4f}")
-        print(f"Mean Spearman: {statistics['segment_mean_spearman']:.4f}")
-        print(f"Mean R²:       {statistics['segment_mean_r2']:.4f}")
-        
-        # Print audio-level metrics
-        print(f"\n\nNumber of audio files: {statistics['audio_num_samples']}")
-        print("\n=== AUDIO-LEVEL METRICS (Aggregated) ===")
-        print("=== Valence Metrics ===")
-        print(f"MSE:      {statistics['audio_valence_mse']:.4f}")
-        print(f"RMSE:     {statistics['audio_valence_rmse']:.4f}")
-        print(f"MAE:      {statistics['audio_valence_mae']:.4f}")
-        print(f"Pearson:  {statistics['audio_valence_pearson']:.4f}")
-        print(f"Spearman: {statistics['audio_valence_spearman']:.4f}")
-        print(f"R²:       {statistics['audio_valence_r2']:.4f}")
-        
-        print("\n=== Arousal Metrics ===")
-        print(f"MSE:      {statistics['audio_arousal_mse']:.4f}")
-        print(f"RMSE:     {statistics['audio_arousal_rmse']:.4f}")
-        print(f"MAE:      {statistics['audio_arousal_mae']:.4f}")
-        print(f"Pearson:  {statistics['audio_arousal_pearson']:.4f}")
-        print(f"Spearman: {statistics['audio_arousal_spearman']:.4f}")
-        print(f"R²:       {statistics['audio_arousal_r2']:.4f}")
-        
-        print("\n=== Average Metrics ===")
-        print(f"Mean MSE:      {statistics['audio_mean_mse']:.4f}")
-        print(f"Mean RMSE:     {statistics['audio_mean_rmse']:.4f}")
-        print(f"Mean MAE:      {statistics['audio_mean_mae']:.4f}")
-        print(f"Mean Pearson:  {statistics['audio_mean_pearson']:.4f}")
-        print(f"Mean Spearman: {statistics['audio_mean_spearman']:.4f}")
-        print(f"Mean R²:       {statistics['audio_mean_r2']:.4f}") 
+        if is_full_length_audio:
+            # For full-length audios: show only audio-level metrics (no segments)
+            print(f"Number of audio files: {statistics['audio_num_samples']}")
+            print("\n=== AUDIO-LEVEL METRICS (Full-Length Audios) ===")
+            print("=== Valence Metrics ===")
+            print(f"MSE:      {statistics['audio_valence_mse']:.4f}")
+            print(f"RMSE:     {statistics['audio_valence_rmse']:.4f}")
+            print(f"MAE:      {statistics['audio_valence_mae']:.4f}")
+            print(f"Pearson:  {statistics['audio_valence_pearson']:.4f}")
+            print(f"Spearman: {statistics['audio_valence_spearman']:.4f}")
+            print(f"R²:       {statistics['audio_valence_r2']:.4f}")
+            
+            print("\n=== Arousal Metrics ===")
+            print(f"MSE:      {statistics['audio_arousal_mse']:.4f}")
+            print(f"RMSE:     {statistics['audio_arousal_rmse']:.4f}")
+            print(f"MAE:      {statistics['audio_arousal_mae']:.4f}")
+            print(f"Pearson:  {statistics['audio_arousal_pearson']:.4f}")
+            print(f"Spearman: {statistics['audio_arousal_spearman']:.4f}")
+            print(f"R²:       {statistics['audio_arousal_r2']:.4f}")
+            
+            print("\n=== Average Metrics ===")
+            print(f"Mean MSE:      {statistics['audio_mean_mse']:.4f}")
+            print(f"Mean RMSE:     {statistics['audio_mean_rmse']:.4f}")
+            print(f"Mean MAE:      {statistics['audio_mean_mae']:.4f}")
+            print(f"Mean Pearson:  {statistics['audio_mean_pearson']:.4f}")
+            print(f"Mean Spearman: {statistics['audio_mean_spearman']:.4f}")
+            print(f"Mean R²:       {statistics['audio_mean_r2']:.4f}")
+            
+        else:
+            # For segmented data: show both segment-level and audio-level metrics
+            # Print segment-level metrics
+            print(f"Number of segments: {statistics['segment_num_samples']}")
+            print("\n=== SEGMENT-LEVEL METRICS ===")
+            print("=== Valence Metrics ===")
+            print(f"MSE:      {statistics['segment_valence_mse']:.4f}")
+            print(f"RMSE:     {statistics['segment_valence_rmse']:.4f}")
+            print(f"MAE:      {statistics['segment_valence_mae']:.4f}")
+            print(f"Pearson:  {statistics['segment_valence_pearson']:.4f}")
+            print(f"Spearman: {statistics['segment_valence_spearman']:.4f}")
+            print(f"R²:       {statistics['segment_valence_r2']:.4f}")
+            
+            print("\n=== Arousal Metrics ===")
+            print(f"MSE:      {statistics['segment_arousal_mse']:.4f}")
+            print(f"RMSE:     {statistics['segment_arousal_rmse']:.4f}")
+            print(f"MAE:      {statistics['segment_arousal_mae']:.4f}")
+            print(f"Pearson:  {statistics['segment_arousal_pearson']:.4f}")
+            print(f"Spearman: {statistics['segment_arousal_spearman']:.4f}")
+            print(f"R²:       {statistics['segment_arousal_r2']:.4f}")
+            
+            print("\n=== Average Metrics ===")
+            print(f"Mean MSE:      {statistics['segment_mean_mse']:.4f}")
+            print(f"Mean RMSE:     {statistics['segment_mean_rmse']:.4f}")
+            print(f"Mean MAE:      {statistics['segment_mean_mae']:.4f}")
+            print(f"Mean Pearson:  {statistics['segment_mean_pearson']:.4f}")
+            print(f"Mean Spearman: {statistics['segment_mean_spearman']:.4f}")
+            print(f"Mean R²:       {statistics['segment_mean_r2']:.4f}")
+            
+            # Print audio-level metrics
+            print(f"\n\nNumber of audio files: {statistics['audio_num_samples']}")
+            print("\n=== AUDIO-LEVEL METRICS (Aggregated) ===")
+            print("=== Valence Metrics ===")
+            print(f"MSE:      {statistics['audio_valence_mse']:.4f}")
+            print(f"RMSE:     {statistics['audio_valence_rmse']:.4f}")
+            print(f"MAE:      {statistics['audio_valence_mae']:.4f}")
+            print(f"Pearson:  {statistics['audio_valence_pearson']:.4f}")
+            print(f"Spearman: {statistics['audio_valence_spearman']:.4f}")
+            print(f"R²:       {statistics['audio_valence_r2']:.4f}")
+            
+            print("\n=== Arousal Metrics ===")
+            print(f"MSE:      {statistics['audio_arousal_mse']:.4f}")
+            print(f"RMSE:     {statistics['audio_arousal_rmse']:.4f}")
+            print(f"MAE:      {statistics['audio_arousal_mae']:.4f}")
+            print(f"Pearson:  {statistics['audio_arousal_pearson']:.4f}")
+            print(f"Spearman: {statistics['audio_arousal_spearman']:.4f}")
+            print(f"R²:       {statistics['audio_arousal_r2']:.4f}")
+            
+            print("\n=== Average Metrics ===")
+            print(f"Mean MSE:      {statistics['audio_mean_mse']:.4f}")
+            print(f"Mean RMSE:     {statistics['audio_mean_rmse']:.4f}")
+            print(f"Mean MAE:      {statistics['audio_mean_mae']:.4f}")
+            print(f"Mean Pearson:  {statistics['audio_mean_pearson']:.4f}")
+            print(f"Mean Spearman: {statistics['audio_mean_spearman']:.4f}")
+            print(f"Mean R²:       {statistics['audio_mean_r2']:.4f}") 

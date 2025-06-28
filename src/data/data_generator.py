@@ -7,18 +7,16 @@ import os
 
 def collate_fn(list_data_dict):
     """
-    Collate input features and targets of segments.
+    Collate input features and targets for audio-level processing.
     Args:
         list_data_dict: list of dict, each dict contains:
             'feature': (time_steps, mel_bins)
             'target': (classes_num,)
-            'segment_idx': int
             'audio_name': str
     Returns:
         np_data_dict: dict containing:
             'feature': (batch_size, time_steps, mel_bins)
             'target': (batch_size, classes_num)
-            'segment_idx': (batch_size,)
             'audio_name': list of str
     """
     np_data_dict = {}
@@ -30,10 +28,6 @@ def collate_fn(list_data_dict):
     # Stack targets
     targets = np.array([data_dict['target'] for data_dict in list_data_dict])
     np_data_dict['target'] = torch.Tensor(targets)
-    
-    # Stack segment indices
-    segment_indices = np.array([data_dict['segment_idx'] for data_dict in list_data_dict])
-    np_data_dict['segment_idx'] = torch.LongTensor(segment_indices)
     
     # Collect audio names
     audio_names = [data_dict['audio_name'] for data_dict in list_data_dict]
@@ -79,13 +73,13 @@ def emotion_collate_fn(list_data_dict):
 
 class GtzanDataset(object):
     def __init__(self):
-        """This class takes the meta of an audio segment as input, and return 
-        the feature and target of the audio segment. This class is used by DataLoader.
+        """This class takes the meta of an audio clip as input, and return 
+        the feature and target of the audio clip. This class is used by DataLoader.
         """
         pass
         
     def __getitem__(self, meta):
-        """Load feature and target of an audio segment.
+        """Load feature and target of an audio clip.
         Args:
             meta: {
                 'hdf5_path': str, 
@@ -94,7 +88,6 @@ class GtzanDataset(object):
             data_dict: {
                 'feature': (time_steps, mel_bins)
                 'target': (classes_num,),
-                'segment_idx': int,
                 'audio_name': str
             }
         """
@@ -104,13 +97,11 @@ class GtzanDataset(object):
         with h5py.File(hdf5_path, 'r') as hf:
             feature = hf['feature'][index_in_hdf5]
             target = hf['target'][index_in_hdf5]
-            segment_idx = hf['segment_idx'][index_in_hdf5]
             audio_name = hf['audio_name'][index_in_hdf5].decode()
             
         data_dict = {
             'feature': feature,
             'target': target,
-            'segment_idx': segment_idx,
             'audio_name': audio_name}
             
         return data_dict
@@ -164,9 +155,8 @@ class Base(object):
 
         with h5py.File(indexes_hdf5_path, 'r') as hf:
             self.audio_indexes = hf['audio_indexes'][:]
-            self.segment_indexes = hf['segment_indexes'][:]
             
-        self.total_segments = len(self.segment_indexes)
+        self.total_audios = len(self.audio_indexes)
         
 
 class TrainSampler(Base):
@@ -198,26 +188,24 @@ class TrainSampler(Base):
         """
         batch_size = self.batch_size
 
-        n = len(self.segment_indexes)
-        indexes = np.array(self.segment_indexes)
+        audio_indexes = self.audio_indexes.copy()
+        np.random.shuffle(audio_indexes)
 
-        np.random.shuffle(indexes)
-        
         pointer = 0
-        while pointer < n:
-            batch_indexes = indexes[pointer : pointer + batch_size]
+
+        while pointer < len(audio_indexes):
+            batch_indexes = audio_indexes[pointer: pointer + batch_size]
             pointer += batch_size
 
             batch_meta = []
-            for index in batch_indexes:
+            for audio_index in batch_indexes:
                 batch_meta.append({
                     'hdf5_path': self.hdf5_path, 
-                    'index_in_hdf5': index})
-                    
+                    'index_in_hdf5': audio_index})
             yield batch_meta
 
     def __len__(self):
-        return -1
+        return len(self.audio_indexes) // self.batch_size
 
 
 class EvaluateSampler(Base):
@@ -233,10 +221,10 @@ class EvaluateSampler(Base):
         # Change _waveform to _features in the path
         if 'waveform' in hdf5_path:
             base_path = hdf5_path[:-11]  # Remove 'waveform.h5'
-            indexes_hdf5_path = base_path + 'waveform_validate.h5'
+            indexes_hdf5_path = base_path + 'waveform_evaluate.h5'
         else:
             base_path = hdf5_path[:-3]  # Remove '.h5'
-            indexes_hdf5_path = base_path + '_validate.h5'
+            indexes_hdf5_path = base_path + '_evaluate.h5'
             
         super(EvaluateSampler, self).__init__(indexes_hdf5_path, batch_size)
 
@@ -248,168 +236,130 @@ class EvaluateSampler(Base):
                 ...]
         """
         batch_size = self.batch_size
-        
-        n = len(self.segment_indexes)
-        indexes = np.array(self.segment_indexes)
-        
+
+        audio_indexes = self.audio_indexes.copy()
+
         pointer = 0
-        while pointer < n:
-            batch_indexes = indexes[pointer : pointer + batch_size]
+
+        while pointer < len(audio_indexes):
+            batch_indexes = audio_indexes[pointer: pointer + batch_size]
             pointer += batch_size
-            
+
             batch_meta = []
-            for index in batch_indexes:
+            for audio_index in batch_indexes:
                 batch_meta.append({
                     'hdf5_path': self.hdf5_path, 
-                    'index_in_hdf5': index})
-                    
+                    'index_in_hdf5': audio_index})
             yield batch_meta
-            
+
     def __len__(self):
-        return -1 
+        return len(self.audio_indexes) // self.batch_size
 
 
 class EmotionTrainSampler(object):
     def __init__(self, hdf5_path, batch_size, train_ratio=0.7):
-        """Sampler for emotion regression training.
+        """Sampler for emotion training.
         Args:
-            hdf5_path: string, path to HDF5 file with emotion data
+            hdf5_path: string
             batch_size: int
-            train_ratio: float, ratio of audio files used for training (rest for validation)
+            train_ratio: float, ratio of training data
         """
         self.hdf5_path = hdf5_path
         self.batch_size = batch_size
-        
-        # Load audio names and create audio-based split
+        self.train_ratio = train_ratio
+
+        # Load all audio indexes
         with h5py.File(hdf5_path, 'r') as hf:
-            audio_names = [name.decode() if isinstance(name, bytes) else name for name in hf['audio_name'][:]]
-            total_samples = len(audio_names)
+            self.audio_indexes = np.arange(len(hf['feature']))
+            
+        # Split into train and validation
+        np.random.seed(42)  # For reproducible splits
+        np.random.shuffle(self.audio_indexes)
         
-        # Get unique audio files (remove segment suffixes like "_seg0", "_seg1", etc.)
-        unique_audio_files = set()
-        for name in audio_names:
-            # Remove segment suffix if present
-            base_name = name.split('_seg')[0] if '_seg' in name else name
-            unique_audio_files.add(base_name)
+        split_idx = int(len(self.audio_indexes) * train_ratio)
+        self.train_indexes = self.audio_indexes[:split_idx]
         
-        unique_audio_files = sorted(list(unique_audio_files))
-        
-        # Split audio files (not segments) to prevent data leakage
-        np.random.seed(42)  # Fixed seed for reproducible splits
-        num_train_files = int(len(unique_audio_files) * train_ratio)
-        
-        shuffled_files = unique_audio_files.copy()
-        np.random.shuffle(shuffled_files)
-        
-        train_audio_files = set(shuffled_files[:num_train_files])
-        val_audio_files = set(shuffled_files[num_train_files:])
-        
-        # Get segment indices for each split
-        self.train_indices = []
-        self.val_indices = []
-        
-        for i, name in enumerate(audio_names):
-            base_name = name.split('_seg')[0] if '_seg' in name else name
-            if base_name in train_audio_files:
-                self.train_indices.append(i)
-            elif base_name in val_audio_files:
-                self.val_indices.append(i)
-        
-        print(f"Emotion dataset split by audio files:")
-        print(f"  Unique audio files: {len(unique_audio_files)}")
-        print(f"  Train audio files: {len(train_audio_files)} ({len(train_audio_files)/len(unique_audio_files)*100:.1f}%)")
-        print(f"  Val audio files: {len(val_audio_files)} ({len(val_audio_files)/len(unique_audio_files)*100:.1f}%)")
-        print(f"  Train segments: {len(self.train_indices)}")
-        print(f"  Val segments: {len(self.val_indices)}")
+        print(f"Training samples: {len(self.train_indexes)}")
+        print(f"Total samples: {len(self.audio_indexes)}")
 
     def __iter__(self):
-        """Generate batch meta for training."""
+        """Generate batch meta for training.
+        Returns:
+            batch_meta: e.g.: [
+                {'hdf5_path': string, 'index_in_hdf5': int}, 
+                ...]
+        """
         batch_size = self.batch_size
-        n = len(self.train_indices)
-        indices = np.copy(self.train_indices)
-        np.random.shuffle(indices)
-        
+
+        audio_indexes = self.train_indexes.copy()
+        np.random.shuffle(audio_indexes)
+
         pointer = 0
-        while pointer < n:
-            batch_indices = indices[pointer : pointer + batch_size]
+
+        while pointer < len(audio_indexes):
+            batch_indexes = audio_indexes[pointer: pointer + batch_size]
             pointer += batch_size
 
             batch_meta = []
-            for index in batch_indices:
+            for audio_index in batch_indexes:
                 batch_meta.append({
                     'hdf5_path': self.hdf5_path, 
-                    'index_in_hdf5': index})
-                    
+                    'index_in_hdf5': audio_index})
             yield batch_meta
 
     def __len__(self):
-        return (len(self.train_indices) + self.batch_size - 1) // self.batch_size
+        return len(self.train_indexes) // self.batch_size
 
 
 class EmotionValidateSampler(object):
     def __init__(self, hdf5_path, batch_size, train_ratio=0.7):
-        """Sampler for emotion regression validation.
+        """Sampler for emotion validation.
         Args:
-            hdf5_path: string, path to HDF5 file with emotion data
+            hdf5_path: string
             batch_size: int
-            train_ratio: float, ratio of audio files used for training (rest for validation)
+            train_ratio: float, ratio of training data
         """
         self.hdf5_path = hdf5_path
         self.batch_size = batch_size
-        
-        # Load audio names and create audio-based split
+        self.train_ratio = train_ratio
+
+        # Load all audio indexes
         with h5py.File(hdf5_path, 'r') as hf:
-            audio_names = [name.decode() if isinstance(name, bytes) else name for name in hf['audio_name'][:]]
-            total_samples = len(audio_names)
+            self.audio_indexes = np.arange(len(hf['feature']))
+            
+        # Split into train and validation
+        np.random.seed(42)  # For reproducible splits
+        np.random.shuffle(self.audio_indexes)
         
-        # Get unique audio files (remove segment suffixes like "_seg0", "_seg1", etc.)
-        unique_audio_files = set()
-        for name in audio_names:
-            # Remove segment suffix if present
-            base_name = name.split('_seg')[0] if '_seg' in name else name
-            unique_audio_files.add(base_name)
+        split_idx = int(len(self.audio_indexes) * train_ratio)
+        self.validate_indexes = self.audio_indexes[split_idx:]
         
-        unique_audio_files = sorted(list(unique_audio_files))
-        
-        # Split audio files (not segments) to prevent data leakage
-        np.random.seed(42)  # Fixed seed for reproducible splits
-        num_train_files = int(len(unique_audio_files) * train_ratio)
-        
-        shuffled_files = unique_audio_files.copy()
-        np.random.shuffle(shuffled_files)
-        
-        train_audio_files = set(shuffled_files[:num_train_files])
-        val_audio_files = set(shuffled_files[num_train_files:])
-        
-        # Get segment indices for each split
-        self.train_indices = []
-        self.val_indices = []
-        
-        for i, name in enumerate(audio_names):
-            base_name = name.split('_seg')[0] if '_seg' in name else name
-            if base_name in train_audio_files:
-                self.train_indices.append(i)
-            elif base_name in val_audio_files:
-                self.val_indices.append(i)
+        print(f"Validation samples: {len(self.validate_indexes)}")
+        print(f"Total samples: {len(self.audio_indexes)}")
 
     def __iter__(self):
-        """Generate batch meta for validation."""
+        """Generate batch meta for validation.
+        Returns:
+            batch_meta: e.g.: [
+                {'hdf5_path': string, 'index_in_hdf5': int}, 
+                ...]
+        """
         batch_size = self.batch_size
-        n = len(self.val_indices)
-        indices = np.copy(self.val_indices)
-        
+
+        audio_indexes = self.validate_indexes.copy()
+
         pointer = 0
-        while pointer < n:
-            batch_indices = indices[pointer : pointer + batch_size]
+
+        while pointer < len(audio_indexes):
+            batch_indexes = audio_indexes[pointer: pointer + batch_size]
             pointer += batch_size
-            
+
             batch_meta = []
-            for index in batch_indices:
+            for audio_index in batch_indexes:
                 batch_meta.append({
                     'hdf5_path': self.hdf5_path, 
-                    'index_in_hdf5': index})
-                    
+                    'index_in_hdf5': audio_index})
             yield batch_meta
-            
+
     def __len__(self):
-        return (len(self.val_indices) + self.batch_size - 1) // self.batch_size
+        return len(self.validate_indexes) // self.batch_size

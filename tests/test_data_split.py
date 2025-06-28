@@ -13,40 +13,36 @@ from src.data.data_generator import EmotionTrainSampler, EmotionValidateSampler
 def test_data_split(feature_path, train_ratio=0.7):
     """Test the data splitting to ensure no audio file appears in both train and validation."""
     
-    print("Testing Audio-Based Data Split")
+    print("Testing Audio-Based Data Split (Full-Length Audios)")
     print("=" * 60)
     
-    # Load features
+    # Load features and store important info before closing
     with h5py.File(feature_path, 'r') as hf:
         audio_names = [name.decode() if isinstance(name, bytes) else name for name in hf['audio_name'][:]]
         valence = hf['valence'][:]
         arousal = hf['arousal'][:]
+        feature_shape = hf['feature'].shape  # Store shape before closing
     
-    print(f"Total samples: {len(audio_names)}")
+    print(f"Total audio files: {len(audio_names)}")
     
     # Create samplers
     train_sampler = EmotionTrainSampler(feature_path, batch_size=32, train_ratio=train_ratio)
     val_sampler = EmotionValidateSampler(feature_path, batch_size=32, train_ratio=train_ratio)
     
-    print(f"\nTrain indices: {len(train_sampler.train_indices)}")
-    print(f"Val indices: {len(val_sampler.val_indices)}")
+    print(f"\nTrain indices: {len(train_sampler.train_indexes)}")
+    print(f"Val indices: {len(val_sampler.validate_indexes)}")
     
     # Get audio names for each split
-    train_audio_names = [audio_names[i] for i in train_sampler.train_indices]
-    val_audio_names = [audio_names[i] for i in val_sampler.val_indices]
+    train_audio_names = [audio_names[i] for i in train_sampler.train_indexes]
+    val_audio_names = [audio_names[i] for i in val_sampler.validate_indexes]
     
-    # Extract base audio file names (remove segment suffixes)
-    def get_base_name(name):
-        return name.split('_seg')[0] if '_seg' in name else name
-    
-    train_base_files = set([get_base_name(name) for name in train_audio_names])
-    val_base_files = set([get_base_name(name) for name in val_audio_names])
-    
-    print(f"\nUnique audio files in train: {len(train_base_files)}")
-    print(f"Unique audio files in val: {len(val_base_files)}")
+    print(f"\nUnique audio files in train: {len(train_audio_names)}")
+    print(f"Unique audio files in val: {len(val_audio_names)}")
     
     # Check for overlap (data leakage)
-    overlap = train_base_files.intersection(val_base_files)
+    train_set = set(train_audio_names)
+    val_set = set(val_audio_names)
+    overlap = train_set.intersection(val_set)
     
     if len(overlap) == 0:
         print("✅ NO DATA LEAKAGE: No audio files appear in both train and validation sets")
@@ -55,51 +51,29 @@ def test_data_split(feature_path, train_ratio=0.7):
         for file in sorted(overlap):
             print(f"  - {file}")
     
-    # Show distribution of segments per audio file
-    print(f"\nSegment distribution:")
-    
-    # Count segments per base file in train set
-    train_segment_counts = {}
-    for name in train_audio_names:
-        base_name = get_base_name(name)
-        train_segment_counts[base_name] = train_segment_counts.get(base_name, 0) + 1
-    
-    # Count segments per base file in val set
-    val_segment_counts = {}
-    for name in val_audio_names:
-        base_name = get_base_name(name)
-        val_segment_counts[base_name] = val_segment_counts.get(base_name, 0) + 1
-    
-    print(f"Train set - segments per audio file: {list(train_segment_counts.values())[:10]}...")
-    print(f"Val set - segments per audio file: {list(val_segment_counts.values())[:10]}...")
-    
-    # Expected: 6 segments per audio file (since we split 6-second clips into 1-second segments)
-    expected_segments = 6
-    train_correct_segments = sum(1 for count in train_segment_counts.values() if count == expected_segments)
-    val_correct_segments = sum(1 for count in val_segment_counts.values() if count == expected_segments)
-    
-    print(f"\nFiles with expected {expected_segments} segments:")
-    print(f"  Train: {train_correct_segments}/{len(train_segment_counts)} ({train_correct_segments/len(train_segment_counts)*100:.1f}%)")
-    print(f"  Val: {val_correct_segments}/{len(val_segment_counts)} ({val_correct_segments/len(val_segment_counts)*100:.1f}%)")
+    # Show distribution of audio files
+    print(f"\nAudio file distribution:")
+    print(f"  Train set: {len(train_audio_names)} files ({len(train_audio_names)/len(audio_names)*100:.1f}%)")
+    print(f"  Val set: {len(val_audio_names)} files ({len(val_audio_names)/len(audio_names)*100:.1f}%)")
     
     # Show some examples
-    print(f"\nExample train files and their segments:")
-    train_examples = sorted(list(train_base_files))[:3]
-    for base_file in train_examples:
-        segments = [name for name in train_audio_names if get_base_name(name) == base_file]
-        print(f"  {base_file}: {len(segments)} segments")
-        for seg in segments[:3]:  # Show first 3 segments
-            idx = train_sampler.train_indices[train_audio_names.index(seg)]
-            print(f"    {seg} -> valence={valence[idx]:.3f}, arousal={arousal[idx]:.3f}")
+    print(f"\nExample train files:")
+    train_examples = train_audio_names[:3]
+    for audio_file in train_examples:
+        idx = train_sampler.train_indexes[train_audio_names.index(audio_file)]
+        print(f"  {audio_file} -> valence={valence[idx]:.3f}, arousal={arousal[idx]:.3f}")
     
-    print(f"\nExample val files and their segments:")
-    val_examples = sorted(list(val_base_files))[:3]
-    for base_file in val_examples:
-        segments = [name for name in val_audio_names if get_base_name(name) == base_file]
-        print(f"  {base_file}: {len(segments)} segments")
-        for seg in segments[:3]:  # Show first 3 segments
-            idx = val_sampler.val_indices[val_audio_names.index(seg)]
-            print(f"    {seg} -> valence={valence[idx]:.3f}, arousal={arousal[idx]:.3f}")
+    print(f"\nExample val files:")
+    val_examples = val_audio_names[:3]
+    for audio_file in val_examples:
+        idx = val_sampler.validate_indexes[val_audio_names.index(audio_file)]
+        print(f"  {audio_file} -> valence={valence[idx]:.3f}, arousal={arousal[idx]:.3f}")
+    
+    # Show feature statistics
+    print(f"\nFeature statistics:")
+    print(f"  Feature shape: {feature_shape}")
+    print(f"  Valence range: [{valence.min():.3f}, {valence.max():.3f}]")
+    print(f"  Arousal range: [{arousal.min():.3f}, {arousal.max():.3f}]")
     
     print("\n" + "=" * 60)
     print("Data split test completed!")

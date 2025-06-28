@@ -4,7 +4,7 @@ Extract mel-spectrogram features from Emo-Soundscapes dataset.
 
 This script:
 1. Loads audio files from the Emo-Soundscapes dataset
-2. Extracts mel-spectrogram features 
+2. Extracts mel-spectrogram features for full-length audios
 3. Loads valence and arousal ratings
 4. Saves everything to HDF5 format for training
 """
@@ -25,88 +25,23 @@ from src.utils.audio_utils import create_folder
 from src.utils.config import sample_rate, clip_samples, mel_bins, fmin, fmax, window_size, hop_size
 
 
-def extract_melspectrogram_segments(audio_path, sr=32000, clip_duration=6.0, segment_duration=1.0):
-    """Extract mel-spectrogram segments from audio file (similar to GTZAN approach).
+def extract_melspectrogram_full_audio(audio_path, sr=32000, max_duration=30.0, target_length=1000):
+    """Extract mel-spectrogram from full audio file.
     
     Args:
         audio_path: str, path to audio file
         sr: int, sample rate
-        clip_duration: float, total duration of clip in seconds
-        segment_duration: float, duration of each segment in seconds
+        max_duration: float, maximum duration to process (for memory efficiency)
+        target_length: int, target number of time steps (will pad or truncate)
         
     Returns:
-        mel_specs: list of np.array, mel-spectrograms for each segment
+        mel_spec: np.array, mel-spectrogram (target_length, mel_bins)
     """
     try:
-        # Load audio
-        audio, _ = librosa.load(audio_path, sr=sr, duration=clip_duration)
+        # Load audio with maximum duration limit
+        audio, _ = librosa.load(audio_path, sr=sr, duration=max_duration)
         
-        # Pad or truncate to exact duration
-        target_length = int(sr * clip_duration)
-        if len(audio) < target_length:
-            audio = np.pad(audio, (0, target_length - len(audio)), mode='constant')
-        else:
-            audio = audio[:target_length]
-        
-        # Extract segments (similar to GTZAN: 1-second segments)
-        segment_samples = int(sr * segment_duration)
-        num_segments = int(clip_duration / segment_duration)
-        
-        mel_specs = []
-        for i in range(num_segments):
-            start_idx = i * segment_samples
-            end_idx = start_idx + segment_samples
-            segment = audio[start_idx:end_idx]
-            
-            # Extract mel-spectrogram for this segment
-            mel_spec = librosa.feature.melspectrogram(
-                y=segment,
-                sr=sr,
-                n_fft=window_size,
-                hop_length=hop_size,
-                n_mels=mel_bins,
-                fmin=fmin,
-                fmax=fmax
-            )
-            
-            # Convert to log scale
-            mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-            
-            # Transpose to (time_steps, mel_bins)
-            mel_spec = mel_spec.T
-            
-            mel_specs.append(mel_spec)
-        
-        return mel_specs
-        
-    except Exception as e:
-        print(f"Error processing {audio_path}: {e}")
-        return None
-
-
-def extract_melspectrogram(audio_path, sr=32000, duration=1.0):
-    """Extract mel-spectrogram from audio file (single segment).
-    
-    Args:
-        audio_path: str, path to audio file
-        sr: int, sample rate
-        duration: float, duration in seconds
-        
-    Returns:
-        mel_spec: np.array, mel-spectrogram (time_steps, mel_bins)
-    """
-    try:
-        # Load audio
-        audio, _ = librosa.load(audio_path, sr=sr, duration=duration)
-        
-        # Pad or truncate to exact duration
-        target_length = int(sr * duration)
-        if len(audio) < target_length:
-            audio = np.pad(audio, (0, target_length - len(audio)), mode='constant')
-        else:
-            audio = audio[:target_length]
-        
-        # Extract mel-spectrogram
+        # Extract mel-spectrogram for the full audio
         mel_spec = librosa.feature.melspectrogram(
             y=audio,
             sr=sr,
@@ -122,6 +57,15 @@ def extract_melspectrogram(audio_path, sr=32000, duration=1.0):
         
         # Transpose to (time_steps, mel_bins)
         mel_spec = mel_spec.T
+        
+        # Pad or truncate to target length
+        if mel_spec.shape[0] < target_length:
+            # Pad with zeros
+            padding = np.zeros((target_length - mel_spec.shape[0], mel_bins))
+            mel_spec = np.vstack([mel_spec, padding])
+        elif mel_spec.shape[0] > target_length:
+            # Truncate
+            mel_spec = mel_spec[:target_length, :]
         
         return mel_spec
         
@@ -328,22 +272,18 @@ def extract_features(args):
     arousal_ratings = []
     audio_names = []
     
-    print("Extracting features...")
+    print("Extracting features from full-length audios...")
     for rating_filename, audio_file_path in tqdm(rated_files):
-        # Extract mel-spectrogram segments (6 segments of 1 second each)
-        mel_specs = extract_melspectrogram_segments(audio_file_path)
+        # Extract mel-spectrogram for full audio
+        mel_spec = extract_melspectrogram_full_audio(audio_file_path)
         
-        if mel_specs is not None:
-            # Add each segment as a separate sample (similar to GTZAN approach)
-            for i, mel_spec in enumerate(mel_specs):
-                features.append(mel_spec)
-                valence_ratings.append(ratings_dict[rating_filename]['valence'])
-                arousal_ratings.append(ratings_dict[rating_filename]['arousal'])
-                # Add segment index to filename for tracking
-                segment_name = f"{rating_filename}_seg{i}"
-                audio_names.append(segment_name)
+        if mel_spec is not None:
+            features.append(mel_spec)
+            valence_ratings.append(ratings_dict[rating_filename]['valence'])
+            arousal_ratings.append(ratings_dict[rating_filename]['arousal'])
+            audio_names.append(rating_filename)
     
-    print(f"Successfully extracted features from {len(features)} files")
+    print(f"Successfully extracted features from {len(features)} audio files")
     
     if len(features) == 0:
         print("No features extracted!")

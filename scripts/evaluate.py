@@ -8,6 +8,7 @@ import os
 import sys
 import argparse
 import torch
+import glob
 from pathlib import Path
 
 # Add src to path
@@ -16,13 +17,59 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from src.training.trainer import inference
 from configs.training_configs import create_parser
 
+def find_best_model(workspace, model_type, batch_size=None):
+    """Find the best model checkpoint in the workspace."""
+    # Look for best_model.pth in the workspace
+    best_model_pattern = os.path.join(workspace, "checkpoints", "**", model_type, "**", "best_model.pth")
+    best_models = glob.glob(best_model_pattern, recursive=True)
+    
+    if best_models:
+        # If batch_size is specified, try to find a model with matching batch_size
+        if batch_size is not None:
+            matching_models = []
+            for model_path in best_models:
+                # Check if the path contains the batch_size
+                if f"batch_size={batch_size}" in model_path:
+                    matching_models.append(model_path)
+            
+            if matching_models:
+                # Return the first matching model
+                return matching_models[0]
+            else:
+                print(f"⚠️ No best model found with batch_size={batch_size}, using first available")
+        
+        # Return the first best model found (fallback)
+        return best_models[0]
+    
+    # Fallback: look for latest iteration checkpoint
+    latest_pattern = os.path.join(workspace, "checkpoints", "**", model_type, "**", "*_iterations.pth")
+    latest_models = glob.glob(latest_pattern, recursive=True)
+    
+    if latest_models:
+        # Sort by iteration number and return the latest
+        def extract_iteration(path):
+            filename = os.path.basename(path)
+            if '_iterations.pth' in filename:
+                try:
+                    return int(filename.split('_')[0])
+                except:
+                    return 0
+            return 0
+        
+        latest_models.sort(key=extract_iteration, reverse=True)
+        return latest_models[0]
+    
+    return None
+
 def create_eval_parser():
     """Create argument parser for evaluation script."""
     parser = argparse.ArgumentParser(description='Evaluate trained models')
     
     # Model arguments
-    parser.add_argument('--model_path', type=str, required=True,
-                       help='Path to trained model checkpoint')
+    parser.add_argument('--model_path', type=str, default=None,
+                       help='Path to trained model checkpoint (if not provided, will auto-find best model)')
+    parser.add_argument('--use_best_model', action='store_true', default=False,
+                       help='Force use of best model (overrides --model_path if specified)')
     parser.add_argument('--model_type', type=str, required=True,
                        choices=['Transfer_Cnn6', 'Transfer_Cnn14', 'FeatureAffectiveCnn6',
                                'FeatureEmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_NewAffective',
@@ -55,6 +102,25 @@ def main():
     """Main evaluation function."""
     parser = create_eval_parser()
     args = parser.parse_args()
+    
+    # Auto-find best model if not provided or if --use_best_model is specified
+    if args.use_best_model or args.model_path is None:
+        print("🔍 Auto-searching for best model...")
+        best_model_path = find_best_model(args.workspace, args.model_type, args.batch_size)
+        
+        if best_model_path:
+            args.model_path = best_model_path
+            if args.use_best_model:
+                print(f"✅ Using best model: {args.model_path}")
+            else:
+                print(f"✅ Auto-selected best model: {args.model_path}")
+        else:
+            print(f"❌ No model found in workspace: {args.workspace}")
+            print("Available options:")
+            print("  1. Specify --model_path explicitly")
+            print("  2. Check if workspace contains trained models")
+            print("  3. Run training first to generate models")
+            sys.exit(1)
     
     # Determine if this is emotion or genre evaluation based on model type
     emotion_models = ['FeatureEmotionRegression_Cnn6', 'FeatureEmotionRegression_Cnn6_NewAffective', 

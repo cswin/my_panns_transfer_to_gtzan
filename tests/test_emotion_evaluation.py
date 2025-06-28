@@ -46,12 +46,13 @@ def test_emotion_evaluation(feature_path):
         print(f"Segmented samples: {segmented_count}/{len(hf['audio_name'])}")
         
         if segmented_count == 0:
-            print("⚠️  WARNING: Features appear to be in OLD FORMAT (not segmented)")
-            print("   You need to re-extract features with the updated extract_emotion_features.py")
-            print("   Expected: 6 segments per audio file (1213 files → 7278 segments)")
+            print("✅ Features are in FULL-LENGTH AUDIO format (new correct format)")
+            print("   Each audio file is processed as a single feature")
             print("   Current: 1 sample per audio file (1213 files → 1213 samples)")
         else:
-            print("✅ Features are in segmented format")
+            print("⚠️  Features are in SEGMENTED format (old format)")
+            print("   Each audio file is split into multiple segments")
+            print("   Current: 6 segments per audio file (1213 files → 7278 segments)")
     
     # Create a simple mock model for testing
     class MockEmotionModel:
@@ -82,12 +83,12 @@ def test_emotion_evaluation(feature_path):
     )
     
     # Check if we have enough validation samples
-    if len(val_sampler.val_indices) == 0:
+    if len(val_sampler.validate_indexes) == 0:
         print("Error: No validation samples found!")
         return
     
-    print(f"\nValidation samples: {len(val_sampler.val_indices)}")
-    print(f"Expected batches: ~{len(val_sampler.val_indices) // 32}")
+    print(f"\nValidation samples: {len(val_sampler.validate_indexes)}")
+    print(f"Expected batches: ~{len(val_sampler.validate_indexes) // 32}")
     
     # Test evaluation
     mock_model = MockEmotionModel()
@@ -101,10 +102,16 @@ def test_emotion_evaluation(feature_path):
     
     # Verify that we have both segment and audio level metrics
     expected_keys = [
-        'segment_mean_mae', 'segment_mean_rmse', 'segment_mean_pearson',
         'audio_mean_mae', 'audio_mean_rmse', 'audio_mean_pearson',
-        'segment_num_samples', 'audio_num_samples'
+        'audio_num_samples'
     ]
+    
+    # For segmented data, also expect segment metrics
+    if 'segment_num_samples' in statistics:
+        expected_keys.extend([
+            'segment_mean_mae', 'segment_mean_rmse', 'segment_mean_pearson',
+            'segment_num_samples'
+        ])
     
     print(f"\nMetric verification:")
     for key in expected_keys:
@@ -113,11 +120,14 @@ def test_emotion_evaluation(feature_path):
         else:
             print(f"✗ Missing: {key}")
     
-    # Check that audio-level has fewer samples than segment-level
-    if statistics['audio_num_samples'] < statistics['segment_num_samples']:
-        print(f"✓ Audio-level aggregation working: {statistics['audio_num_samples']} audio files < {statistics['segment_num_samples']} segments")
+    # Check audio-level aggregation (only for segmented data)
+    if 'segment_num_samples' in statistics:
+        if statistics['audio_num_samples'] < statistics['segment_num_samples']:
+            print(f"✓ Audio-level aggregation working: {statistics['audio_num_samples']} audio files < {statistics['segment_num_samples']} segments")
+        else:
+            print(f"✗ Audio-level aggregation issue: {statistics['audio_num_samples']} audio files >= {statistics['segment_num_samples']} segments")
     else:
-        print(f"✗ Audio-level aggregation issue: {statistics['audio_num_samples']} audio files >= {statistics['segment_num_samples']} segments")
+        print(f"✓ Full-length audio format: {statistics['audio_num_samples']} audio files (no segments)")
 
 if __name__ == '__main__':
     # Test with the emotion features - try multiple locations

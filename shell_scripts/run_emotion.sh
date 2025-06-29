@@ -162,7 +162,7 @@ fi
 # =============================================================================
 
 # Updated configuration for epoch-based training with full-length audios
-BATCH_SIZE=16        # Reduced batch size for full-length audios (memory considerations)
+BATCH_SIZE=24        # Adjusted batch size to fit GPU memory
 EPOCHS=100           # More intuitive than iterations
 LEARNING_RATE=0.001  # Higher learning rate for better convergence
 

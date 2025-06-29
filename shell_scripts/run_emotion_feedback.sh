@@ -81,7 +81,7 @@ PRETRAINED_MODEL="/DATA/pliu/EmotionData/Cnn6_mAP=0.343.pth"  # Cnn6 model
 # =============================================================================
 
 # Updated configuration for epoch-based training with feedback and full-length audios
-BATCH_SIZE=16        # Reduced batch size for full-length audios (memory considerations)
+BATCH_SIZE=24        # Adjusted batch size to fit GPU memory
 EPOCHS=100           # More intuitive than iterations
 LEARNING_RATE=0.001  # Higher learning rate for feedback model convergence
 

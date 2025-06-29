@@ -558,7 +558,6 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
             # Valence modulates semantic processing (higher-level conv layers)
             {'source': 'affective_valence_128d', 'target': 'visual_system.base.conv_block4'},
             {'source': 'affective_valence_128d', 'target': 'visual_system.base.conv_block3'},
-            
             # Arousal modulates attention (lower-level conv layers)
             {'source': 'affective_arousal_128d', 'target': 'visual_system.base.conv_block2'},
             {'source': 'affective_arousal_128d', 'target': 'visual_system.base.conv_block1'}

@@ -203,14 +203,8 @@ def train(args):
 
     # Optimizer - use same settings for both models for fair comparison
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, 
-                          betas=(0.9, 0.999), eps=1e-08, weight_decay=0., amsgrad=True)
-    
-    # Stronger regularization only for LRM models (but same learning rate)
-    if 'LRM' in args.model_type:
-        # Only add weight decay for LRM models to handle additional feedback parameters
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate, 
-                              betas=(0.9, 0.999), eps=1e-08, weight_decay=0.01, amsgrad=True)
-        logging.info('Using stronger regularization (weight_decay=0.01) for LRM model')
+                          betas=(0.9, 0.999), eps=1e-08, weight_decay=0.01, amsgrad=True)
+    logging.info('Using weight_decay=0.01 for all models')
     
     # Best model tracking for final evaluation (but continue training)
     best_val_pearson = -1.0
@@ -223,6 +217,10 @@ def train(args):
         logging.info('Using learning rate scheduler for LRM model')
     else:
         scheduler = None
+
+    # Learning rate scheduler for feedback model
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2000, gamma=0.9)
+    logging.info('Using StepLR scheduler for all models: step_size=2000, gamma=0.9')
 
     # Mixup augmentation
     if 'mixup' in augmentation:
@@ -354,6 +352,10 @@ def train(args):
         # Print loss occasionally
         if iteration % 100 == 0:
             print('Iteration: {}, loss: {:.3f}'.format(iteration, loss.item()))
+
+        # Step the scheduler for all models
+        if scheduler is not None:
+            scheduler.step()
 
         iteration += 1
 

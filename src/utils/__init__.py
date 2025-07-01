@@ -2,10 +2,10 @@
 Utility functions for audio processing, visualization, and PyTorch operations.
 """
 
-from src.utils.audio_utils import *
-from src.utils.visualization import *
-from src.utils.pytorch_utils import *
-from src.utils.config import *
+from .audio_utils import *
+from .visualization import *
+from .pytorch_utils import *
+from .config import *
 
 __all__ = [
     'audio_utils',

@@ -1,0 +1,28 @@
+STEERING TEST SUMMARY
+==================================================
+Total samples tested: 20
+Categories tested: {'unknown'}
+
+ISSUE DETECTED: Steering signals not working properly
+====================================================
+- All steered predictions are 0.000 (baseline values are normal)
+- Categories are showing as 'unknown' instead of proper emotion categories
+- This suggests the steering signal application is not functioning correctly
+
+Sample Results (first 5):
+1. r_0society78661_1148115-hq.wav: V=-0.092->0.000, A=-0.166->0.000
+2. mix_between_human_society_1-6_1-6.wav: V=0.006->0.000, A=-0.239->0.000
+3. mix_within_mechanical_1-6_2-12_3-12.wav: V=-0.111->0.000, A=-0.014->0.000
+4. r_0human19520_2-hq.wav: V=-0.265->0.000, A=0.142->0.000
+5. mix_within_human_1-6_3-12.wav: V=-0.196->0.000, A=-0.060->0.000
+
+RECOMMENDATIONS:
+1. Check if the steering signals are being loaded correctly
+2. Verify the model's steering signal application method
+3. Test with a simpler steering approach using the debug scripts
+4. Ensure the LRM (Latent Response Modulation) system is properly enabled
+
+NEXT STEPS:
+- Run debug_steering_application.py to test basic steering functionality
+- Check if steering signals are properly formatted and accessible
+- Verify model checkpoint compatibility with steering features 

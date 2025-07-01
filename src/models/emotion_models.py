@@ -13,7 +13,7 @@ from torch.nn.modules.utils import _pair
 from functools import partial
 from typing import Any, Callable, List, Optional, Type, Union
 
-from src.models import FeatureEmotionRegression_Cnn6, init_layer
+from .cnn_models import FeatureEmotionRegression_Cnn6, init_layer
 from src.utils.pytorch_utils import do_mixup
 
 
@@ -276,162 +276,130 @@ def get_layer_shapes(model, layer_names, input_tensor):
     return shapes
 
 
+class MultiHeadAttentionFusion(nn.Module):
+    def __init__(self, object_dim=1000, emotion_dim=8, attention_dim=512,
+                 num_heads=4, visual_bias=0.0, emotion_bias=0.0, predict_vision_emotion=2):
+        super(MultiHeadAttentionFusion, self).__init__()
+        self.num_heads = num_heads
+        self.head_dim = attention_dim // num_heads
+        self.visual_bias = visual_bias
+        self.emotion_bias = emotion_bias
+
+        assert attention_dim % num_heads == 0
+
+        # Transform both object and emotion features to attention_dim
+        self.object_transform = nn.Linear(object_dim, attention_dim)
+        self.emotion_transform = nn.Linear(emotion_dim, attention_dim)
+
+        self.query = nn.Linear(attention_dim, attention_dim)
+        self.key = nn.Linear(attention_dim, attention_dim)
+        self.value = nn.Linear(attention_dim, attention_dim)
+        self.fc_out = nn.Linear(attention_dim, attention_dim)
+        self.predict_vision_emotion = predict_vision_emotion
+
+    def forward(self, object_feats, emotion_feats, predict_vision_emotion=None):
+        """
+        object_feats: Tensor of shape [batch_size, object_dim]
+        emotion_feats: Tensor of shape [batch_size, emotion_dim]
+        """
+        predict_vision_emotion = self.predict_vision_emotion if predict_vision_emotion is None else predict_vision_emotion
+        
+        # Transform both object and emotion features to attention_dim
+        transformed_object_feats = self.object_transform(object_feats)          # [batch_size, attention_dim]
+        transformed_emotion_feats = self.emotion_transform(emotion_feats)       # [batch_size, attention_dim]
+
+        # if not self.training:  # Only apply this logic during inference
+        if predict_vision_emotion ==1:  # If only vision features are to be predicted
+            return self.fc_out(transformed_object_feats)
+
+        if predict_vision_emotion ==2: # If only emotion features are to be predicted
+            return self.fc_out(transformed_emotion_feats)
+
+        # Now both have shape [batch_size, attention_dim]
+        combined_feats = torch.stack([transformed_object_feats, transformed_emotion_feats], dim=1)
+        # combined_feats: [batch_size, 2, attention_dim]
+
+        Q = self.query(combined_feats)
+        K = self.key(combined_feats)
+        V = self.value(combined_feats)
+
+        Q = Q.view(Q.shape[0], 2, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        K = K.view(K.shape[0], 2, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        V = V.view(V.shape[0], 2, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+        attention_scores = torch.einsum("bhqd,bhkd->bhqk", Q, K) / (self.head_dim ** 0.5)
+        # print("Visual bias:", self.visual_bias)
+        # print("Emotion bias:", self.emotion_bias)
+
+        # Shift columns differently to bias attention
+        attention_scores[:, :, :, 0] += self.visual_bias  # vision key
+        attention_scores[:, :, :, 1] += self.emotion_bias  # emotion key
+
+        attention_weights = F.softmax(attention_scores, dim=-1)
+
+        attention_output = torch.einsum("bhqk,bhkd->bhqd", attention_weights, V)
+        attention_output = attention_output.permute(0, 2, 1, 3).reshape(attention_output.shape[0], 2, -1)
+        fused = torch.mean(attention_output, dim=1)
+
+        return self.fc_out(fused)
+
+
 class LongRangeModulation(nn.Sequential):
-    """Original LRM implementation with sophisticated steering capabilities."""
-    
     def __init__(self, model, mod_connections, img_size=224):
         # Initialize parent class later
         self.targ_hooks = []
         self.mod_inputs = {}
         self.mod_hooks = []
+        self.remove_mod_inputs = False
         self.disable_modulation_during_inference = False
         
-        # Get connection info - handle both old and new formats
-        if isinstance(mod_connections, list):
-            # New format: list of {'source': ..., 'target': ...} dictionaries
-            self.mod_connections = mod_connections
-        else:
-            # Old format: convert to new format for consistency
-            old_connections = []
-            for target, sources in mod_connections.items():
-                for source in sources:
-                    old_connections.append({'source': source, 'target': target})
-            self.mod_connections = old_connections
+        # Store the original mod_connections for reference
+        self.mod_connections = mod_connections
         
-        self.name = "multi_target_modulation"
+        # Group connections by destination
+        connections = defaultdict(list)
+        for conn in mod_connections:
+            connections[conn['destination']].append(conn['source'])
         
-        # Get all unique layer names for shape extraction
-        layer_names = set()
-        for conn in self.mod_connections:
-            layer_names.add(conn['target'])
-            # Note: sources might be custom names like 'affective_valence_128d', not actual layer names
-            if hasattr(model, conn['source'].replace('.', '').replace('_', '')):
-                layer_names.add(conn['source'])
-        
-        # Get layer shapes using proper mel-spectrogram input
-        mel_bins = 64  # Standard for emotion models
-        time_steps = 1024  # Reasonable default
-        x = torch.rand(1, time_steps, mel_bins)
-        shapes = get_layer_shapes(model, list(layer_names), x)
-        
-        # Get model layers
-        model_layers = dict(model.named_modules())
-        
-        # Register hooks for each connection
-        layers = OrderedDict()
-        for conn in self.mod_connections:
-            source_name = conn['source']
-            target_name = conn['target']
-            
-            # Register target hook
-            if target_name in model_layers:
-                target_module = model_layers[target_name]
-                hook_id = f"target_{target_name}"
-                if hook_id not in [h[1] for h in self.targ_hooks]:  # Avoid duplicate hooks
-                    self.targ_hooks.append((target_module.register_forward_hook(
-                        partial(self.forward_hook_target, target_name=target_name)), hook_id))
-            
-            # Create ModBlock for this connection
-            mod_name = f'from_{source_name.replace(".", "_")}_to_{target_name.replace(".", "_")}'
-            
-            # For affective sources, we'll use fixed dimensions
-            if 'affective_valence_128d' in source_name or 'affective_arousal_128d' in source_name:
-                source_channels = 128
-                source_size = (1, 1)  # 128D vector will be treated as (batch, 128, 1, 1)
-            else:
-                # Use actual layer shapes
-                source_channels = shapes[source_name][1] if source_name in shapes else 128
-                source_size = _pair(shapes[source_name][2:]) if source_name in shapes else (1, 1)
-            
-            target_channels = shapes[target_name][1] if target_name in shapes else 512
-            target_size = _pair(shapes[target_name][2:]) if target_name in shapes else (8, 8)
-            
-            modblock = ModBlock(
-                name=mod_name,
-                in_channels=source_channels,
-                out_channels=target_channels,
-                in_shape=source_size,
-                out_shape=target_size,
-                block_order='norm-squash-resize',
-                norm_type='AdaptiveFullstackNorm',
-                resize_type='UpsampleBilinear',
-                dropout_rate=0.0  # Removed dropout
+        # Create modulation layers for each destination
+        layers = OrderedDict([])
+        for dest_layer, source_layers in connections.items():
+            mod_layer = LongRangeModulationSingle(
+                model, dest_layer, source_layers, img_size=img_size
             )
-            layers[mod_name] = modblock
+            layers[mod_layer.name] = mod_layer
         
-        # Initialize parent class
         super().__init__(layers)
         
-        # Clear initial mod_inputs
-        self.mod_inputs = {}
-
+        # Clear mod_inputs created when initializing modules
+        for block in self.children():
+            block.mod_inputs = {}
+    
     def forward_hook_target(self, module, input, output, target_name):
-        """Apply modulation to target output."""
-        
-        if self.disable_modulation_during_inference or len(self.mod_inputs) == 0:
-            return output
-        
-        # Get target size for adaptive resizing
-        target_size = output.shape[-2:] if len(output.shape) == 4 else 1
-        
-        # Apply modulation from sources that target this specific layer
-        total_mod = torch.zeros_like(output)
-        
-        for mod_name, mod_module in self.named_children():
-            # Check if this ModBlock targets the current layer
-            if target_name.replace('.', '_') in mod_name and mod_name in self.mod_inputs:
-                source_activation = self.mod_inputs[mod_name]
-                
-                try:
-                    # IMPROVED DEVICE FIX: Keep ModBlock on its original device
-                    # Move tensors to ModBlock device, compute modulation, then move result back
-                    mod_device = next(mod_module.parameters()).device
-                    target_device = output.device
-                    
-                    # Move source activation to ModBlock device
-                    source_on_mod_device = source_activation.to(mod_device)
-                    
-                    # Compute modulation on ModBlock device
-                    mod = mod_module(source_on_mod_device, target_size=target_size)
-                    
-                    # Move modulation result to target device
-                    if mod.device != target_device:
-                        mod = mod.to(target_device)
-                    
-                    total_mod = total_mod + mod
-                    
-                except Exception as e:
-                    # Enhanced error reporting for debugging
-                    print(f"❌ Modulation error in {mod_name}:")
-                    print(f"   Target: {target_name}, Output shape: {output.shape} (device: {output.device})")
-                    print(f"   Source activation shape: {source_activation.shape} (device: {source_activation.device})")
-                    print(f"   ModBlock device: {next(mod_module.parameters()).device}")
-                    print(f"   Error: {e}")
-                    # Continue without this modulation
-                    continue
-        
-        # Apply modulation: output = output + output * modulation
-        if torch.any(total_mod != 0):  # Only apply if there's actual modulation
-            output = output + output * total_mod
-            output = F.relu(output, inplace=False)
-        
-        return output
+        """Forward hook for target layer - not used in this implementation."""
+        pass
 
     def hook_fn(self, module, input, output, name):
-        """Store source activation for modulation."""
+        """Hook function to store activations."""
         self.mod_inputs[name] = output
 
     def clear_stored_activations(self):
         """Clear stored activations."""
         self.mod_inputs.clear()
+        for block in self.children():
+            block.mod_inputs.clear()
 
     def enable(self):
         """Enable modulation."""
         self.disable_modulation_during_inference = False
+        for block in self.children():
+            block.disable_modulation_during_inference = False
 
     def disable(self):
         """Disable modulation."""
         self.disable_modulation_during_inference = True
+        for block in self.children():
+            block.disable_modulation_during_inference = True
 
     def remove_hooks(self):
         """Remove all hooks."""
@@ -444,6 +412,10 @@ class LongRangeModulation(nn.Sequential):
             hook.remove()
         self.targ_hooks.clear()
         self.mod_hooks.clear()
+        
+        # Remove hooks from children
+        for block in self.children():
+            block.remove_hooks()
 
     def adjust_modulation_strength(self, strength):
         """Adjust modulation strength for all ModBlocks."""
@@ -466,17 +438,347 @@ class LongRangeModulation(nn.Sequential):
 
     def reset_modulation_strength(self):
         """Reset modulation strength to original values."""
-        with torch.no_grad():
-            for mod_block in self.children():
-                if hasattr(mod_block, 'neg_scale_orig'):
-                    mod_block.neg_scale.data = mod_block.neg_scale_orig.clone()
-                    delattr(mod_block, 'neg_scale_orig')
-                if hasattr(mod_block, 'pos_scale_orig'):
-                    mod_block.pos_scale.data = mod_block.pos_scale_orig.clone()
-                    delattr(mod_block, 'pos_scale_orig')
+        for lrm_module_name, lrm_module in self.named_children():
+            for feedback_module_name, feedback_module in lrm_module.named_children():
+                if hasattr(feedback_module, 'neg_scale_orig'):
+                    feedback_module.neg_scale = nn.Parameter(feedback_module.neg_scale_orig)
+                    del feedback_module.neg_scale_orig
+                if hasattr(feedback_module, 'pos_scale_orig'):
+                    feedback_module.pos_scale = nn.Parameter(feedback_module.pos_scale_orig)
+                    del feedback_module.pos_scale_orig
 
     def forward(self, x):
         """Forward pass placeholder - not used in hook-based implementation."""
+        pass
+
+
+class LongRangeModulationSingle(nn.Sequential):
+    """Single destination LongRangeModulation implementation matching tmp/models/layers_emotion.py"""
+    
+    def __init__(self, model, mod_target, mod_sources, img_size=224,
+                 mod_block_order='norm-squash-resize',
+                 mod_norm_type='AdaptiveFullstackNorm',
+                 mod_resize_type='UpsampleBilinear',
+                 active_connections=None, is_fusion=False,
+                 attention_dim=512,
+                 num_heads=4, visual_bias=0, emotion_bias=0.0,
+                 predict_vision_emotion=2, inactive_source_layer=None):
+        
+        # Initialize parent class later
+        self.targ_hooks = []
+        self.mod_inputs = {}
+        self.mod_hooks = []
+        self.remove_mod_inputs = False
+        self.predict_vision_emotion = predict_vision_emotion
+        self.inactive_source_layer = inactive_source_layer
+        self.disable_modulation_during_inference = False
+
+        # If active_connections is None, consider all connections as active
+        self.active_connections = active_connections if active_connections is not None else [
+            (source, mod_target) for source in mod_sources
+        ]
+
+        self.name = f"{mod_target.replace('.', '_')}_modulation"
+
+        # first get the output shapes for mod_target and mod_sources
+        layer_names = [mod_target] + mod_sources
+        # Use mel-spectrogram input format for emotion models
+        mel_bins = 64  # Standard for emotion models
+        time_steps = 1024  # Reasonable default
+        x = torch.rand(1, time_steps, mel_bins)
+        shapes = get_layer_shapes(model, layer_names, x)
+
+        # get list of modules from model
+        model_layers = dict([*model.named_modules()])
+
+        # register a forward hook for the target_module
+        # this is where we'll modulate the target_module's output
+        target_module = model_layers[mod_target]
+
+        # The selected line of code registers a forward hook on the target_module. This hook will call the forward_hook_target method whenever the target_module performs a forward pass.
+        self.targ_hooks += [target_module.register_forward_hook(self.forward_hook_target)]
+
+        # iterate over modulation sources, adding a ModBlock for each
+        layers = OrderedDict([])
+        for source_layer_name in mod_sources:
+            # Handle custom source names that don't exist in the model
+            if source_layer_name in model_layers:
+                source_module = model_layers[source_layer_name]
+            else:
+                # For custom sources like 'affective_valence_128d', we'll create a placeholder
+                # The actual activation will be set by steering signals
+                source_module = None
+
+            name = f'from_{source_layer_name.replace(".", "_")}_to_{mod_target.replace(".", "_")}'
+            
+            # Only register hooks for actual model layers
+            if source_module is not None:
+                # The code on line 430 registers a forward hook for the `source_module`. This hook will call the `hook_fn` method with the specified `name` whenever the `source_module` performs a forward pass. The `partial` function is used to pass the `name` argument to the `hook_fn` method.
+                # In summary, this line of code is setting up a mechanism to capture the output of the `source_module` during its forward pass and store it in the `mod_inputs` dictionary with the given `name` as the key.
+                self.mod_hooks += [source_module.register_forward_hook(partial(self.hook_fn, name=name))]
+
+            # Get shapes for source and target
+            if source_layer_name in shapes:
+                source_size = _pair(shapes[source_layer_name][2:]) or (1, 1)
+                source_channels = shapes[source_layer_name][1]
+            else:
+                # For custom sources, use default values
+                source_size = (1, 1)
+                source_channels = 128  # Default for 128D affective representations
+
+            target_size = _pair(shapes[mod_target][2:]) or (1, 1)
+            target_channels = shapes[mod_target][1]
+
+            mod_block_params = dict(
+                name=name,
+                source_channels=source_channels,
+                target_channels=target_channels,
+                source_size=source_size,
+                target_size=target_size,
+                mod_block_order=mod_block_order,
+                mod_norm_type=mod_norm_type,
+                mod_resize_type=mod_resize_type
+            )
+
+            # ModBlock handles aligning the source activation to the target activation
+            # Normalizing, Squashing, and Resizing, then conv1x1 source => target
+            modblock = ModBlock(name=mod_block_params['name'],
+                                in_channels=mod_block_params['source_channels'],
+                                out_channels=mod_block_params['target_channels'],
+                                in_shape=mod_block_params['source_size'],
+                                out_shape=mod_block_params['target_size'],
+                                block_order=mod_block_params['mod_block_order'],
+                                norm_type=mod_block_params['mod_norm_type'],
+                                resize_type=mod_block_params['mod_resize_type'])
+            layers[name] = modblock
+
+        # Identity blocks for storing outputs
+        self.pre_mod_output = None
+        self.total_mod = None
+        self.post_mod_output = None
+        super().__init__(layers)
+
+        # Initialize Multi-Head Attention Fusion if is_fusion is True
+        self.is_fusion = is_fusion
+        if len(mod_sources) != 2 and is_fusion:
+            self.is_fusion = False
+
+        if self.is_fusion:
+            # Create a dedicated ModBlock for fused features
+            fused_block_name = "from_fused_to_" + mod_target.replace('.', '_')
+            fused_block = ModBlock(
+                name=fused_block_name,
+                in_channels=attention_dim,
+                out_channels=shapes[mod_target][1],
+                in_shape=(1, 1),  # Since fused_features is [B, C, 1, 1] after unsqueeze
+                out_shape=_pair(shapes[mod_target][2:]) or (1, 1),
+                block_order=mod_block_order,
+                norm_type=mod_norm_type,
+                resize_type=mod_resize_type
+            )
+            self.add_module(fused_block_name, fused_block)
+            self.fused_block_name = fused_block_name
+
+            # We assume exactly two sources for fusion: first as "object", second as "emotion"
+            self.multihead_fusion = MultiHeadAttentionFusion(
+                object_dim=shapes[mod_sources[0]][1],
+                emotion_dim=shapes[mod_sources[1]][1],
+                attention_dim=attention_dim,
+                num_heads=num_heads,
+                visual_bias=visual_bias,
+                emotion_bias=emotion_bias, predict_vision_emotion=predict_vision_emotion
+            )
+        else:
+            self.multihead_fusion = None
+
+    def update_active_connections(self, active_connections):
+        """
+        Update the active connections during inference.
+        """
+        self.active_connections = active_connections
+
+    def forward_hook_target(self, module, input, output):
+        '''modulate target output'''
+
+        if self.disable_modulation_during_inference:
+            self.pre_mod_output = output.clone()
+            self.post_mod_output = output.clone()
+            return output
+
+        if len(self.mod_inputs) == 0:
+            self.pre_mod_output = output.clone()
+            self.post_mod_output = output.clone()
+            return output
+
+        # Save pre-modulation output
+        self.pre_mod_output = output.clone()
+
+        # we need to know current output size to adaptively resize in ModBlock
+        target_size = output.shape[-2:] if len(output.shape) == 4 else 1
+
+        # Initialize a list to collect activations from all source layers
+        source_activations = []
+
+        for mod_name, mod_module in self.named_children():
+            # Filter only modules with names matching the "from_source_to_target" pattern
+            if not mod_name.startswith("from_") or "_to_" not in mod_name:
+                continue  # Skip unrelated modules
+
+            # Extract source and target layer names
+            # Handle module names like: from_affective_valence_128d_to_visual_system_base_conv_block4
+            parts = mod_name.split('_to_')
+            if len(parts) != 2:
+                continue
+                
+            source_part = parts[0].replace('from_', '')  # Remove 'from_' prefix
+            target_part = parts[1]
+            
+            # Convert underscores back to dots for layer names - but be selective
+            # For source: handle affective sources specially
+            if source_part.startswith('affective_'):
+                # Keep affective sources as-is (don't convert underscores to dots)
+                source_layer = source_part
+            else:
+                # For other sources, convert underscores to dots
+                source_layer = source_part.replace('_', '.')
+            
+            # For target: visual_system_base_conv_block4 -> visual_system.base.conv_block4
+            # Only convert specific underscores to dots based on known patterns
+            if target_part.startswith('visual_system_base_'):
+                # visual_system_base_conv_block4 -> visual_system.base.conv_block4
+                target_layer = target_part.replace('visual_system_base_', 'visual_system.base.')
+            else:
+                # Fallback: convert all underscores to dots
+                target_layer = target_part.replace('_', '.')
+
+            # Check if the source-target pair is active
+            if (source_layer, target_layer) in self.active_connections:
+
+                if self.inactive_source_layer is not None and source_layer in self.inactive_source_layer:
+                    continue
+
+                if mod_name in self.mod_inputs:  # Ensure input exists for this source
+                    source_activation = self.mod_inputs[mod_name]
+                    # Append source activation to the list
+                    source_activations.append(source_activation)
+
+        # calculate long-range modulation to apply to output (sum across sources)
+        total_mod = torch.zeros_like(output)
+        # Compute modulation
+        if self.is_fusion and self.multihead_fusion is not None and len(source_activations) == 2:
+            # Use Multi-Head Attention to fuse the two source activations
+            if len(source_activations) != 2:
+                raise ValueError("Fusion mode requires exactly two active source activations.")
+
+            # Global average pooling to reduce feature maps to [B, C]
+            object_feats = (
+                source_activations[0].mean(dim=[2, 3]) if source_activations[0].ndim == 4 else
+                source_activations[0].mean(dim=[1, 2]) if source_activations[0].ndim == 3 else
+                source_activations[0]
+            )
+            object_feats = object_feats.unsqueeze(0) if object_feats.ndim ==1 else object_feats
+
+            emotion_feats = (
+                source_activations[1].mean(dim=[2, 3]) if source_activations[1].ndim == 4 else
+                source_activations[1].mean(dim=[1, 2]) if source_activations[1].ndim == 3 else
+                source_activations[1]
+            )
+
+            # Apply Multi-Head Attention Fusion
+            fused_features = self.multihead_fusion(object_feats, emotion_feats)  # [B, attention_dim]
+
+            # Apply the dedicated fused ModBlock
+            fused_block = self._modules[self.fused_block_name]
+            mod_fused_features = fused_block(fused_features, target_size=target_size)
+
+            total_mod = total_mod + mod_fused_features
+
+        else:
+            # Original non-fusion summation logic
+            total_mod = torch.zeros_like(output)
+            found_active = False
+            for mod_name, mod_module in self.named_children():
+                if not mod_name.startswith("from_") or "_to_" not in mod_name:
+                    continue
+
+                # Handle module names like: from_affective_valence_128d_to_visual_system_base_conv_block4
+                parts = mod_name.split('_to_')
+                if len(parts) != 2:
+                    continue
+                    
+                source_part = parts[0].replace('from_', '')  # Remove 'from_' prefix
+                target_part = parts[1]
+                
+                # Convert underscores back to dots for layer names - but be selective
+                # For source: handle affective sources specially
+                if source_part.startswith('affective_'):
+                    # Keep affective sources as-is (don't convert underscores to dots)
+                    source_layer = source_part
+                else:
+                    # For other sources, convert underscores to dots
+                    source_layer = source_part.replace('_', '.')
+                
+                # For target: visual_system_base_conv_block4 -> visual_system.base.conv_block4
+                # Only convert specific underscores to dots based on known patterns
+                if target_part.startswith('visual_system_base_'):
+                    # visual_system_base_conv_block4 -> visual_system.base.conv_block4
+                    target_layer = target_part.replace('visual_system_base_', 'visual_system.base.')
+                else:
+                    # Fallback: convert all underscores to dots
+                    target_layer = target_part.replace('_', '.')
+
+                if (source_layer, target_layer) in self.active_connections and mod_name in self.mod_inputs:
+                    if self.inactive_source_layer is not None and source_layer in self.inactive_source_layer:
+                        continue
+                    source_activation = self.mod_inputs[mod_name]
+                    
+                    mod = mod_module(source_activation, target_size=target_size)
+
+                    total_mod = total_mod + mod
+                    found_active = True
+
+            if not found_active:
+                self.pre_mod_output = output.clone()
+                self.post_mod_output = output.clone()
+                return output  # Return original output
+
+        # Save the total modulation applied
+        self.total_mod = total_mod.clone()
+        
+        # FIXED AMPLIFICATION: Apply consistent moderate scaling
+        # This amplifies all steering effects while preventing saturation
+        # MODULATION_AMPLIFIER = 3.0  # Moderate amplification for all strengths
+        # total_mod = total_mod * MODULATION_AMPLIFIER
+        
+        # # Clamp to prevent extreme saturation but allow strong effects
+        # total_mod = torch.clamp(total_mod, -1.0, 1.0)
+        
+        # Apply modulation (e.g., x = x + x * f)
+        output = output + output * total_mod
+
+        # Save post-modulation output
+        self.post_mod_output = output.clone()
+        output = F.relu(output, inplace=False)
+
+        return output
+
+    def hook_fn(self, module, input, output, name):
+        self.mod_inputs[name] = output
+
+    def remove_hooks(self):
+        """Remove all hooks."""
+        for hook_item in self.targ_hooks:
+            if isinstance(hook_item, tuple):
+                hook_item[0].remove()  # Remove the actual hook object
+            else:
+                hook_item.remove()
+        for hook in self.mod_hooks:
+            hook.remove()
+        self.targ_hooks.clear()
+        self.mod_hooks.clear()
+
+    def forward(self, x):
+        '''forward pass of lrm modules doesn't get called'''
         pass
 
 
@@ -556,11 +858,11 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         # - Arousal (energy/activation) affects attention to acoustic details -> lower-level features
         mod_connections = [
             # Valence modulates semantic processing (higher-level conv layers)
-            {'source': 'affective_valence_128d', 'target': 'visual_system.base.conv_block4'},
-            {'source': 'affective_valence_128d', 'target': 'visual_system.base.conv_block3'},
+            {'source': 'affective_valence_128d', 'destination': 'visual_system.base.conv_block4'},
+            {'source': 'affective_valence_128d', 'destination': 'visual_system.base.conv_block3'},
             # Arousal modulates attention (lower-level conv layers)
-            {'source': 'affective_arousal_128d', 'target': 'visual_system.base.conv_block2'},
-            {'source': 'affective_arousal_128d', 'target': 'visual_system.base.conv_block1'}
+            {'source': 'affective_arousal_128d', 'destination': 'visual_system.base.conv_block2'},
+            {'source': 'affective_arousal_128d', 'destination': 'visual_system.base.conv_block1'}
         ]
         
         # Storage for 128D feedback signals
@@ -616,7 +918,7 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         
         # Handle mixup
         if self.training and mixup_lambda is not None:
-            from src.utils.pytorch_utils import do_mixup
+            from utils.pytorch_utils import do_mixup
             input = do_mixup(input, mixup_lambda)
         
         # Determine number of passes
@@ -632,8 +934,14 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         
         all_outputs = []
         
-        # Clear any previous stored activations before starting
-        self.lrm.clear_stored_activations()
+        # Apply external steering signals if provided
+        # These persist across all passes and provide consistent external guidance
+        if steering_signals is not None:
+            self._apply_steering_signals(steering_signals)
+        
+        # DON'T clear stored activations here - we need them for multi-pass feedback
+        # Each pass will generate new activations that are used by the next pass
+        # Only clear activations between different audio samples (in clear_feedback_state)
         
         # For full-length audios, we compute feedback signals once and reuse them
         # This ensures consistent feedback across all passes since there are no segments
@@ -650,7 +958,7 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
                 # Or apply steering in subsequent passes (default behavior)
                 if first_pass_steering or pass_idx > 0:
                     apply_steering = True
-                    self._apply_steering_signals(steering_signals)
+                    # Steering signals already applied above, no need to apply again
             
             # Visual processing through frozen CNN6 backbone
             visual_embedding = self._forward_visual_system(input, mixup_lambda=None)
@@ -735,7 +1043,7 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
 
         # Mixup on spectrogram
         if self.training and mixup_lambda is not None:
-            from src.utils.pytorch_utils import do_mixup
+            from utils.pytorch_utils import do_mixup
             x = do_mixup(x, mixup_lambda)
 
         # Forward through convolutional blocks
@@ -769,16 +1077,21 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         # Store feedback signals for each target layer
         for conn in self.lrm.mod_connections:
             source_name = conn['source']
-            target_name = conn['target']
+            target_name = conn['destination']
             mod_name = f'from_{source_name.replace(".", "_")}_to_{target_name.replace(".", "_")}'
             
-            if 'affective_valence_128d' in source_name:
-                self.lrm.mod_inputs[mod_name] = valence_4d
-            elif 'affective_arousal_128d' in source_name:
-                self.lrm.mod_inputs[mod_name] = arousal_4d
+            # Find the corresponding LRM module and store the signal
+            for lrm_module_name, lrm_module in self.lrm.named_children():
+                if mod_name in lrm_module.mod_inputs:
+                    if 'affective_valence_128d' in source_name:
+                        lrm_module.mod_inputs[mod_name] = valence_4d
+                    elif 'affective_arousal_128d' in source_name:
+                        lrm_module.mod_inputs[mod_name] = arousal_4d
     
     def clear_feedback_state(self):
         """Clear feedback state between different audio files."""
+        # This should clear ALL stored activations (both internal feedback and steering)
+        # because we're moving to a completely different audio sample
         self.lrm.clear_stored_activations()
     
     def enable_feedback(self):
@@ -797,9 +1110,18 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         """Set modulation strength."""
         self.lrm.adjust_modulation_strength(strength)
     
-    def reset_modulation_strength(self):
-        """Reset modulation strength to original values."""
-        self.lrm.reset_modulation_strength()
+    def reset_modulation_strengths(self):
+        """
+        Reset modulation strengths to original values.
+        """
+        for lrm_module_name, lrm_module in self.lrm.named_children():
+            for feedback_module_name, feedback_module in lrm_module.named_children():
+                if hasattr(feedback_module, 'neg_scale_orig'):
+                    feedback_module.neg_scale = nn.Parameter(feedback_module.neg_scale_orig)
+                    del feedback_module.neg_scale_orig
+                if hasattr(feedback_module, 'pos_scale_orig'):
+                    feedback_module.pos_scale = nn.Parameter(feedback_module.pos_scale_orig)
+                    del feedback_module.pos_scale_orig
     
     def load_from_pretrain(self, pretrained_checkpoint_path):
         """Load pretrained weights for visual system."""
@@ -836,7 +1158,7 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         # Store feedback signals for each target layer
         for conn in self.lrm.mod_connections:
             source_name = conn['source']
-            target_name = conn['target']
+            target_name = conn['destination']
             mod_name = f'from_{source_name.replace(".", "_")}_to_{target_name.replace(".", "_")}'
             
             if signal_type == 'valence' and 'affective_valence_128d' in source_name:
@@ -853,6 +1175,9 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
                             [{'source': layer_name, 'activation': tensor, 
                               'strength': float, 'alpha': float}]
         """
+        # Reset modulation strengths to prevent accumulation
+        self.reset_modulation_strengths()
+        
         for signal_dict in steering_signals:
             source_layer = signal_dict['source']
             activation = signal_dict['activation']
@@ -896,28 +1221,58 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         if not isinstance(lrm_layer_names, list):
             lrm_layer_names = [lrm_layer_names]
         
+        # Handle strength parameter (can be float or tuple)
+        if isinstance(strength, (int, float)):
+            neg_scale_adjust, pos_scale_adjust = strength, strength
+        else:
+            neg_scale_adjust, pos_scale_adjust = strength
+        
         for layer_name in lrm_layer_names:
             if 'affective_valence_128d' in layer_name:
                 # Convert activation to 128D valence representation
                 valence_128d = self._convert_activation_to_128d(activation, 'valence')
-                if hasattr(self, 'valence_128d') and self.valence_128d is not None:
-                    # Blend with internal signal
-                    self.valence_128d = alpha * valence_128d + (1 - alpha) * self.valence_128d
-                else:
-                    self.valence_128d = valence_128d
-                # Apply strength
-                self.valence_128d = self.valence_128d * strength
+                # Convert to 4D for conv layer modulation
+                valence_4d = valence_128d.unsqueeze(-1).unsqueeze(-1)  # (batch, 128, 1, 1)
+                
+                # Store steering signals in the correct LRM module locations
+                # Find all ModBlocks that use this source
+                pattern = 'from_affective_valence_128d_to_'
+                for lrm_module_name, lrm_module in self.lrm.named_children():
+                    for mod_name, mod_module in lrm_module.named_children():
+                        if pattern in mod_name:
+                            # Apply strength adjustment to the ModBlock parameters
+                            self.adjust_modulation_strengths(mod_module, neg_scale_adjust, pos_scale_adjust)
+                            
+                            if mod_name in lrm_module.mod_inputs:
+                                # Blend with existing signal
+                                curr_input = lrm_module.mod_inputs[mod_name]
+                                lrm_module.mod_inputs[mod_name] = alpha * valence_4d + (1 - alpha) * curr_input
+                            else:
+                                # Set new steering signal
+                                lrm_module.mod_inputs[mod_name] = valence_4d
                 
             elif 'affective_arousal_128d' in layer_name:
                 # Convert activation to 128D arousal representation
                 arousal_128d = self._convert_activation_to_128d(activation, 'arousal')
-                if hasattr(self, 'arousal_128d') and self.arousal_128d is not None:
-                    # Blend with internal signal
-                    self.arousal_128d = alpha * arousal_128d + (1 - alpha) * self.arousal_128d
-                else:
-                    self.arousal_128d = arousal_128d
-                # Apply strength
-                self.arousal_128d = self.arousal_128d * strength
+                # Convert to 4D for conv layer modulation
+                arousal_4d = arousal_128d.unsqueeze(-1).unsqueeze(-1)  # (batch, 128, 1, 1)
+                
+                # Store steering signals in the correct LRM module locations
+                # Find all ModBlocks that use this source
+                pattern = 'from_affective_arousal_128d_to_'
+                for lrm_module_name, lrm_module in self.lrm.named_children():
+                    for mod_name, mod_module in lrm_module.named_children():
+                        if pattern in mod_name:
+                            # Apply strength adjustment to the ModBlock parameters
+                            self.adjust_modulation_strengths(mod_module, neg_scale_adjust, pos_scale_adjust)
+                            
+                            if mod_name in lrm_module.mod_inputs:
+                                # Blend with existing signal
+                                curr_input = lrm_module.mod_inputs[mod_name]
+                                lrm_module.mod_inputs[mod_name] = alpha * arousal_4d + (1 - alpha) * curr_input
+                            else:
+                                # Set new steering signal
+                                lrm_module.mod_inputs[mod_name] = arousal_4d
     
     def _convert_activation_to_128d(self, activation, emotion_type):
         """
@@ -979,7 +1334,7 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
             filtered_connections = []
             for conn in self.lrm.mod_connections:
                 source = conn['source']
-                target = conn['target']
+                target = conn['destination']
                 
                 # Check if this connection should be active
                 for active_source, active_target in active_connections:
@@ -993,4 +1348,147 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
     def _reset_active_connections(self):
         """Reset to original connections."""
         if hasattr(self, '_original_mod_connections'):
-            self.lrm.mod_connections = self._original_mod_connections 
+            self.lrm.mod_connections = self._original_mod_connections
+    
+    def extract_activations(self, input):
+        """
+        Extract intermediate activations from the model for steering signal generation.
+        
+        Args:
+            input: (batch_size, time_steps, mel_bins) pre-computed features
+            
+        Returns:
+            activations: dict containing intermediate activations
+        """
+        # Handle input dimensions
+        if input.dim() == 4 and input.shape[1] == 1:
+            input = input.squeeze(1)  # (batch_size, time_steps, mel_bins)
+        
+        # Forward through visual system
+        visual_embedding = self._forward_visual_system(input, mixup_lambda=None)
+        
+        # Extract activations from affective pathways
+        valence_256d = self.affective_valence[0:2](visual_embedding)  # Linear(512,256) + ReLU
+        valence_128d = self.affective_valence[2:4](valence_256d)      # Linear(256,128) + ReLU
+        valence_out = self.affective_valence[4](valence_128d)         # Linear(128,1)
+        
+        arousal_256d = self.affective_arousal[0:2](visual_embedding)  # Linear(512,256) + ReLU
+        arousal_128d = self.affective_arousal[2:4](arousal_256d)      # Linear(256,128) + ReLU
+        arousal_out = self.affective_arousal[4](arousal_128d)         # Linear(128,1)
+        
+        # Return all activations
+        activations = {
+            'valence_128d': valence_128d,
+            'arousal_128d': arousal_128d,
+            'valence_256d': valence_256d,
+            'arousal_256d': arousal_256d,
+            'visual_embedding': visual_embedding,
+            'valence_output': valence_out,
+            'arousal_output': arousal_out
+        }
+        
+        return activations 
+
+    def add_steering_signal(self, source, activation, strength, alpha=1):
+        """
+        Add a steering signal to the network (compatible with SteerableLRM interface).
+        Parameters
+        ----------
+        source: source layer name
+        activation: steering signal
+        strength: modulation strength
+        alpha: the ratio of the steering signal to the current source layer's output
+        Returns
+        -------
+        None
+        """
+        print(f"    🎯 add_steering_signal called with source='{source}', activation.shape={activation.shape}")
+        
+        # Handle strength parameter (can be float or tuple)
+        if isinstance(strength, (int, float)):
+            neg_scale_adjust, pos_scale_adjust = strength, strength
+        else:
+            neg_scale_adjust, pos_scale_adjust = strength
+
+        # find modules targeted by this steering_source, replace their
+        # modulatory inputs for this source with steering activation
+        # Convert source name to match the module naming convention
+        source_clean = source.replace(".", "_")
+        pattern = f'from_{source_clean}_to_'
+        
+        # Debug: Print what we're looking for
+        print(f"      Looking for pattern: '{pattern}'")
+        print(f"      Available feedback modules:")
+        
+        found_matching_module = False
+        for lrm_module_name, lrm_module in self.lrm.named_children():
+            for feedback_module_name, feedback_module in lrm_module.named_children():
+                print(f"        {feedback_module_name}")
+                # If this ModBlock is from steering source to current lrm_module, add steering
+                if pattern in feedback_module_name:
+                    found_matching_module = True
+                    # adjust modulation strengths
+                    self.adjust_modulation_strengths(feedback_module, neg_scale_adjust, pos_scale_adjust)
+
+                    # Align the shape of the activation to match curr_input
+                    if activation.dim() == 1:
+                        activation = activation.unsqueeze(0)  # Convert [1000] to [1, 1000] when first_pass_steering is True
+                    elif activation.dim() == 2:
+                        activation = activation.unsqueeze(-1).unsqueeze(-1)  # Convert [batch, 128] to [batch, 128, 1, 1] for conv modulation
+                    elif activation.dim() == 3:
+                        activation = activation.unsqueeze(0) # Convert [256, 6, 6] to [1, 256, 6, 6] when first_pass_steering is True
+
+                    # Store the steering signal in the main mod_inputs dictionary
+                    # This is what the forward hook looks for
+                    print(f"      Storing steering signal in {lrm_module_name}.mod_inputs[{feedback_module_name}]")
+                    if feedback_module_name in lrm_module.mod_inputs:
+                        # update current modulatory input (if alpha==1, we end up just replacing it with steering activation)
+                        # the activity of the source layer in the recent pass; it is saved by hook_fn function in layers.py
+                        curr_input = lrm_module.mod_inputs[feedback_module_name]
+                        # the feedback signal is a combination of the external steering signal and the current source layer's output
+                        lrm_module.mod_inputs[feedback_module_name] = alpha * activation + (1 - alpha) * curr_input
+                        print(f"        Updated existing signal, new shape: {lrm_module.mod_inputs[feedback_module_name].shape}")
+                else:
+                        # without curr_input, simply set to template
+                        lrm_module.mod_inputs[feedback_module_name] = activation
+                        print(f"        Set new signal, shape: {lrm_module.mod_inputs[feedback_module_name].shape}")
+                        
+        if not found_matching_module:
+            print(f"      WARNING: No matching module found for pattern '{pattern}'")
+
+    @torch.no_grad()
+    def adjust_modulation_strengths(self, feedback_module, neg_scale_adjust, pos_scale_adjust):
+        """Adjust modulation strengths for a specific feedback module."""
+        if neg_scale_adjust != 1.0:
+            if not hasattr(feedback_module, 'neg_scale_orig'):
+                feedback_module.neg_scale_orig = feedback_module.neg_scale.clone()
+            feedback_module.neg_scale = nn.Parameter(feedback_module.neg_scale_orig * neg_scale_adjust)
+
+        if pos_scale_adjust != 1.0:
+            if not hasattr(feedback_module, 'pos_scale_orig'):
+                feedback_module.pos_scale_orig = feedback_module.pos_scale.clone()
+            feedback_module.pos_scale = nn.Parameter(feedback_module.pos_scale_orig * pos_scale_adjust)
+
+    def add_steering_signals(self, steering_signals):
+        """
+        Add multiple steering signals to the network.
+        
+        Parameters
+        ----------
+        steering_signals: list of steering signal dictionaries
+        """
+        for steering_signal in steering_signals:
+            self.add_steering_signal(**steering_signal)
+
+    def reset_modulation_strengths(self):
+        """
+        Reset modulation strengths to original values.
+        """
+        for lrm_module_name, lrm_module in self.lrm.named_children():
+            for feedback_module_name, feedback_module in lrm_module.named_children():
+                if hasattr(feedback_module, 'neg_scale_orig'):
+                    feedback_module.neg_scale = nn.Parameter(feedback_module.neg_scale_orig)
+                    del feedback_module.neg_scale_orig
+                if hasattr(feedback_module, 'pos_scale_orig'):
+                    feedback_module.pos_scale = nn.Parameter(feedback_module.pos_scale_orig)
+                    del feedback_module.pos_scale_orig 

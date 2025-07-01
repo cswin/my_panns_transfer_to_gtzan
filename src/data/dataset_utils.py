@@ -8,6 +8,7 @@ import glob
 import matplotlib.pyplot as plt
 import logging
 
+# Import config values directly
 from src.utils.config import sample_rate, window_size, hop_size, mel_bins, fmin, fmax, classes_num, lb_to_idx
 from src.utils.audio_utils import int16_to_float32
 

@@ -184,6 +184,52 @@ bash shell_scripts/run_emotion_feedback.sh
 - Dynamic modulation strength control
 - Active connection management
 
+### 🎛️ External Steering Signals
+
+**Generate and test external steering signals for emotion feedback research:**
+
+```bash
+# Run complete steering signals pipeline
+bash shell_scripts/run_steering_signals.sh
+```
+
+**What this does:**
+1. Categorizes audio data into 9 emotion bins (3x3 valence/arousal grid)
+2. Extracts average activations from each category as steering signals
+3. Tests steering effects on emotion predictions
+4. Generates visualizations and statistical analysis
+
+**The 9 Emotion Categories:**
+- **Valence**: Positive, Neutral, Negative (3 levels)
+- **Arousal**: Strong, Middle, Weak (3 levels)
+- **Total**: 9 categories (e.g., positive_strong, negative_weak, neutral_middle)
+
+**Manual usage:**
+```bash
+# Generate steering signals
+python scripts/generate_steering_signals.py \
+    --dataset_path features/emotion_features.h5 \
+    --model_checkpoint path/to/model.pth \
+    --output_dir steering_signals \
+    --cuda
+
+# Test steering signals
+python scripts/test_steering_signals.py \
+    --model_checkpoint path/to/model.pth \
+    --steering_dir steering_signals \
+    --dataset_path features/emotion_features.h5 \
+    --output_dir steering_test_results \
+    --cuda
+```
+
+**Research Applications:**
+- Emotion manipulation studies
+- Model interpretability analysis
+- Adaptive emotion-aware systems
+- Feedback mechanism research
+
+**See detailed guide:** [STEERING_SIGNALS_GUIDE.md](STEERING_SIGNALS_GUIDE.md)
+
 ## Models
 
 ### Genre Classification Models
@@ -229,7 +275,7 @@ graph TD;
 - **Model convergence**: ~2000 iterations
 
 ### Emotion Analysis
-- **Input**: 30-second audio clips
+- **Input**: 6-second audio clips
 - **Output**: Valence (-1 to 1) and Arousal (-1 to 1) values
 - **Model size**: ~5.9M parameters per model
 

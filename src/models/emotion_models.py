@@ -853,16 +853,14 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         self.forward_passes = forward_passes
         
         # Feedback connections: 128D affective representations modulate visual conv layers
-        # Based on psychological principles:
-        # - Valence (positive/negative) affects semantic interpretation -> higher-level features
-        # - Arousal (energy/activation) affects attention to acoustic details -> lower-level features
+        # 4-way feedback connections: valence modulates higher layers, arousal modulates lower layers
         mod_connections = [
-            # Valence modulates semantic processing (higher-level conv layers)
-            {'source': 'affective_valence_128d', 'destination': 'visual_system.base.conv_block4'},
+            # Valence modulates higher-level conv layers (semantic processing)
             {'source': 'affective_valence_128d', 'destination': 'visual_system.base.conv_block3'},
-            # Arousal modulates attention (lower-level conv layers)
-            {'source': 'affective_arousal_128d', 'destination': 'visual_system.base.conv_block2'},
-            {'source': 'affective_arousal_128d', 'destination': 'visual_system.base.conv_block1'}
+            {'source': 'affective_valence_128d', 'destination': 'visual_system.base.conv_block4'},
+            # Arousal modulates lower-level conv layers (attention to acoustic details)
+            {'source': 'affective_arousal_128d', 'destination': 'visual_system.base.conv_block1'},
+            {'source': 'affective_arousal_128d', 'destination': 'visual_system.base.conv_block2'}
         ]
         
         # Storage for 128D feedback signals

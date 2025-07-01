@@ -141,7 +141,7 @@ Input → Visual System → Shared Embedding (512d)
 ## Implementation Guidelines
 
 ### Production Configuration
-```python
+   ```python
 # Optimal steering configuration
 steering_config = {
     'approach': 'valence_conv4_only',
@@ -151,7 +151,7 @@ steering_config = {
     'target_layers': ['conv4'],  # or conv3 - identical results
     'coverage': 99.5
 }
-```
+   ```
 
 ### Signal Generation Process
 1. **Load emotion dataset** and categorize into 9 bins

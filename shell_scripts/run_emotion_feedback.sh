@@ -81,7 +81,7 @@ PRETRAINED_MODEL="/DATA/pliu/EmotionData/Cnn6_mAP=0.343.pth"  # Cnn6 model
 # =============================================================================
 
 # Updated configuration for epoch-based training with feedback and full-length audios
-BATCH_SIZE=24        # Adjusted batch size to fit GPU memory
+BATCH_SIZE=16        # Changed batch size to 16
 EPOCHS=100           # More intuitive than iterations
 LEARNING_RATE=0.001  # Higher learning rate for feedback model convergence
 
@@ -97,11 +97,12 @@ FORWARD_PASSES=2  # Number of feedback iterations
 echo "🔄 Setting up Emotion Regression with ORIGINAL LRM TOP-DOWN FEEDBACK..."
 echo "🚀 Training Configuration:"
 echo "  - Model: $MODEL_TYPE (Original LRM Implementation)"
-echo "  - Batch Size: $BATCH_SIZE (optimized for full-length audios)"
+echo "  - Batch Size: $BATCH_SIZE (changed to 16)"
 echo "  - Target Epochs: $EPOCHS"
 echo "  - Estimated Iterations: $STOP_ITERATION"
 echo "  - Forward Passes: $FORWARD_PASSES"
 echo "  - Learning Rate: $LEARNING_RATE"
+echo "  - No weight decay or learning rate schedule"
 echo "  - Advanced Features: Normalization, Squashing, Asymmetric Modulation"
 echo "  - Full-Length Audio: Consistent feedback signals across passes"
 echo ""

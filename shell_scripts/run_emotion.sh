@@ -162,7 +162,7 @@ fi
 # =============================================================================
 
 # Updated configuration for epoch-based training with full-length audios
-BATCH_SIZE=24        # Adjusted batch size to fit GPU memory
+BATCH_SIZE=16        # Changed batch size to 16
 EPOCHS=100           # More intuitive than iterations
 LEARNING_RATE=0.001  # Higher learning rate for better convergence
 
@@ -172,10 +172,11 @@ LEARNING_RATE=0.001  # Higher learning rate for better convergence
 STOP_ITERATION=15000  # Extended training for better convergence
 
 echo "🚀 Training Configuration:"
-echo "  - Batch Size: $BATCH_SIZE (optimized for full-length audios)"
+echo "  - Batch Size: $BATCH_SIZE (changed to 16)"
 echo "  - Target Epochs: $EPOCHS"
 echo "  - Estimated Iterations: $STOP_ITERATION"
 echo "  - Learning Rate: $LEARNING_RATE"
+echo "  - No weight decay or learning rate schedule"
 echo ""
 
 # =============================================================================

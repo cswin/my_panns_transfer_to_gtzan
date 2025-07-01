@@ -201,26 +201,18 @@ def train(args):
         num_workers=8, 
         pin_memory=True)
 
-    # Optimizer - use same settings for both models for fair comparison
+    # Optimizer - no weight decay, no learning rate schedule
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, 
-                          betas=(0.9, 0.999), eps=1e-08, weight_decay=0.01, amsgrad=True)
-    logging.info('Using weight_decay=0.01 for all models')
+                          betas=(0.9, 0.999), eps=1e-08, amsgrad=True)
+    logging.info('Using Adam optimizer without weight decay')
     
     # Best model tracking for final evaluation (but continue training)
     best_val_pearson = -1.0
     best_model_path = None
     
-    # Learning rate scheduler for LRM models
-    if 'LRM' in args.model_type:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, 
-                                                        patience=5, min_lr=1e-6)
-        logging.info('Using learning rate scheduler for LRM model')
-    else:
-        scheduler = None
-
-    # Learning rate scheduler for feedback model
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2000, gamma=0.9)
-    logging.info('Using StepLR scheduler for all models: step_size=2000, gamma=0.9')
+    # No learning rate scheduler
+    scheduler = None
+    logging.info('No learning rate scheduler used')
 
     # Mixup augmentation
     if 'mixup' in augmentation:
@@ -294,11 +286,8 @@ def train(args):
                     torch.save(checkpoint, best_model_path)
                     logging.info('New best model saved with validation Pearson: {:.4f}'.format(best_val_pearson))
 
-                # Learning rate scheduling for LRM models only
-                if 'LRM' in args.model_type:
-                    # Update learning rate scheduler
-                    if scheduler is not None:
-                        scheduler.step(current_val_pearson)
+                # No learning rate scheduling
+                pass
 
                 train_time = train_fin_time - train_bgn_time
                 validate_time = time.time() - train_fin_time
@@ -352,10 +341,6 @@ def train(args):
         # Print loss occasionally
         if iteration % 100 == 0:
             print('Iteration: {}, loss: {:.3f}'.format(iteration, loss.item()))
-
-        # Step the scheduler for all models
-        if scheduler is not None:
-            scheduler.step()
 
         iteration += 1
 

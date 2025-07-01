@@ -37,9 +37,9 @@ The audio processing pipeline transforms raw audio into a format suitable for ma
 % Nodes
 \node[box] (raw) {Raw Audio\\(1D)};
 \node[box, below=of raw] (stft) {STFT\\(Short-Time Fourier Transform)};
-\node[box, below=of stft] (stft_out) {STFT Output\\(97, 513)};
+\node[box, below=of stft] (stft_out) {STFT Output\\(101, 513)};
 \node[box, below=of stft_out] (mel) {Mel Filterbank};
-\node[box, below=of mel] (mel_out) {Mel-Spectrogram\\(97, 64)};
+\node[box, below=of mel] (mel_out) {Mel-Spectrogram\\(101, 64)};
 
 % Arrows
 \draw[arrow] (raw) -- (stft);
@@ -48,8 +48,8 @@ The audio processing pipeline transforms raw audio into a format suitable for ma
 \draw[arrow] (mel) -- (mel_out);
 
 % Labels
-\node[right=0.5cm of stft_out] {97 time frames $\times$ 513 frequency bins};
-\node[right=0.5cm of mel_out] {97 time frames $\times$ 64 mel bins};
+\node[right=0.5cm of stft_out] {101 time frames $\times$ 513 frequency bins};
+\node[right=0.5cm of mel_out] {101 time frames $\times$ 64 mel bins};
 
 \end{tikzpicture}
 \end{center}
@@ -59,9 +59,9 @@ The audio processing pipeline transforms raw audio into a format suitable for ma
 \begin{enumerate}
     \item \textbf{Raw Audio (1D)}: Input audio signal (e.g., 1 second = 32,000 samples)
     \item \textbf{STFT}: Breaks audio into time-frequency components
-    \item \textbf{STFT Output}: Creates 2D matrix of frequency content over time
+    \item \textbf{STFT Output}: Creates 2D matrix of frequency content over time (101 time frames)
     \item \textbf{Mel Filterbank}: Compresses frequency dimension using perceptual scaling
-    \item \textbf{Mel-Spectrogram}: Final 2D representation for machine learning
+    \item \textbf{Mel-Spectrogram}: Final 2D representation for machine learning (101 time frames)
 \end{enumerate}
 
 \section{What STFT Does}
@@ -81,7 +81,8 @@ Think of STFT like taking \textbf{snapshots} of the audio every 0.01 seconds, wh
 \subsection{Mathematical Parameters}
 \begin{align}
 \text{Time resolution} &= \frac{\text{hop\_size}}{\text{sample\_rate}} = \frac{320}{32000} = 0.01 \text{ seconds} \\
-\text{Number of frames} &= 1 + \frac{\text{signal\_length} - \text{window\_size}}{\text{hop\_size}} = 97 \text{ frames} \\
+\text{Number of frames} &= 1 + \frac{\text{signal\_length} + \text{pad} - \text{window\_size}}{\text{hop\_size}} \\
+&= 1 + \frac{32000 + 1024 - 1024}{320} = 1 + 100 = 101 \text{ frames} \\
 \text{Frequency bins} &= \frac{\text{n\_fft}}{2} + 1 = \frac{1024}{2} + 1 = 513 \text{ bins}
 \end{align}
 
@@ -94,7 +95,7 @@ Think of STFT like taking \textbf{snapshots} of the audio every 0.01 seconds, wh
 ]
 
 \node[box] (input) {Raw Audio\\(32,000 samples)};
-\node[box, right=of input] (output) {STFT Matrix\\(97 $\times$ 513)};
+\node[box, right=of input] (output) {STFT Matrix\\(101 $\times$ 513)};
 
 \draw[arrow] (input) -- (output);
 
@@ -116,7 +117,7 @@ Mel-spectrogram applies a \textbf{mel filterbank} to the STFT output, compressin
 
 \subsection{Key Transformations}
 \begin{enumerate}
-    \item \textbf{Takes STFT output} (97, 513)
+    \item \textbf{Takes STFT output} (101, 513)
     \item \textbf{Applies mel filterbank} - compresses 513 frequency bins $\rightarrow$ 64 mel bins
     \item \textbf{Uses mel scale} - mimics human hearing (more sensitive to low frequencies)
     \item \textbf{Converts to log scale} - better for machine learning
@@ -138,8 +139,8 @@ The mel scale is \textbf{perceptually motivated}:
     arrow/.style={->, thick}
 ]
 
-\node[box] (stft) {STFT: (97, 513)\\\small{513 linear frequency bins}};
-\node[box, right=of stft] (mel) {Mel: (97, 64)\\\small{64 mel-scaled frequency bins}};
+\node[box] (stft) {STFT: (101, 513)\\\small{513 linear frequency bins}};
+\node[box, right=of stft] (mel) {Mel: (101, 64)\\\small{64 mel-scaled frequency bins}};
 
 \draw[arrow] (stft) -- (mel);
 
@@ -171,9 +172,9 @@ fmax = 14000          # Maximum frequency (Hz)
 
 \section{Result for Machine Learning}
 
-The final mel-spectrogram shape \textbf{(97, 64)} provides:
+The final mel-spectrogram shape \textbf{(101, 64)} provides:
 \begin{itemize}
-    \item \textbf{97 time steps}: Temporal resolution for capturing changes over time
+    \item \textbf{101 time steps}: Temporal resolution for capturing changes over time
     \item \textbf{64 mel bins}: Perceptually-relevant frequency representation
     \item \textbf{2D image-like format}: Perfect for CNN processing
     \item \textbf{Compact representation}: Efficient for training and inference

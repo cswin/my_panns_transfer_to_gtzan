@@ -4,7 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.utils.pytorch_utils import do_mixup, interpolate, pad_framewise_output
+try:
+    from ..utils.pytorch_utils import do_mixup, interpolate, pad_framewise_output
+except ImportError:
+    from src.utils.pytorch_utils import do_mixup, interpolate, pad_framewise_output
  
 
 def init_layer(layer):

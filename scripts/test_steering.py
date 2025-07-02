@@ -303,7 +303,7 @@ def main():
                        help='Output file for results')
     parser.add_argument('--max_samples', type=int, default=None,
                        help='Maximum number of samples to test (None = all)')
-    parser.add_argument('--strengths', type=str, default='0.0,0.1,0.2,0.3,0.5,0.7,1.0,1.2,1.5,1.8,2.0,5.0,10.0,20.0,50.0',
+    parser.add_argument('--strengths', type=str, default='0.0,1.0,1.5,2.0,2.5,3,3.5,4,4.5,5.0,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10',
                        help='Comma-separated list of steering strengths to test')
     
     args = parser.parse_args()

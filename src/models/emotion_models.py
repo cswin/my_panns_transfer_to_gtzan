@@ -14,7 +14,10 @@ from functools import partial
 from typing import Any, Callable, List, Optional, Type, Union
 
 from .cnn_models import FeatureEmotionRegression_Cnn6, init_layer
-from src.utils.pytorch_utils import do_mixup
+try:
+    from ..utils.pytorch_utils import do_mixup
+except ImportError:
+    from src.utils.pytorch_utils import do_mixup
 
 
 # ===================================================================
@@ -932,31 +935,18 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
         
         all_outputs = []
         
-        # Apply external steering signals if provided
-        # These persist across all passes and provide consistent external guidance
-        if steering_signals is not None:
-            self._apply_steering_signals(steering_signals)
-        
         # DON'T clear stored activations here - we need them for multi-pass feedback
         # Each pass will generate new activations that are used by the next pass
         # Only clear activations between different audio samples (in clear_feedback_state)
         
-        # For full-length audios, we compute feedback signals once and reuse them
-        # This ensures consistent feedback across all passes since there are no segments
-        feedback_computed = False
-        stored_valence_128d = None
-        stored_arousal_128d = None
+        # NOTE: Steering signals are now applied INSIDE the forward pass loop
+        # to ensure they blend with CURRENT pass activations, not stale ones
         
+        if steering_signals is not None and first_pass_steering:
+            self._apply_steering_signals(steering_signals)
+
         # Multiple forward passes with feedback
         for pass_idx in range(num_passes):
-            # Apply external steering signals if provided
-            apply_steering = False
-            if steering_signals is not None:
-                # Apply steering in first pass if first_pass_steering is True
-                # Or apply steering in subsequent passes (default behavior)
-                if first_pass_steering or pass_idx > 0:
-                    apply_steering = True
-                    # Steering signals already applied above, no need to apply again
             
             # Visual processing through frozen CNN6 backbone
             visual_embedding = self._forward_visual_system(input, mixup_lambda=None)
@@ -971,19 +961,12 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
             arousal_128d = self.affective_arousal[2:4](arousal_256d)      # Linear(256,128) + ReLU
             arousal_out = self.affective_arousal[4](arousal_128d)         # Linear(128,1)
             
-            # For full-length audios: compute feedback signals once and reuse
-            if not feedback_computed:
-                # Store 128D feedback signals for LRM modulation (computed once)
-                self.valence_128d = valence_128d
-                self.arousal_128d = arousal_128d
-                stored_valence_128d = valence_128d
-                stored_arousal_128d = arousal_128d
-                feedback_computed = True
-            else:
-                # Use stored feedback signals for consistency across passes
-                self.valence_128d = stored_valence_128d
-                self.arousal_128d = stored_arousal_128d
+            # Update feedback signals for this pass with current activations
+            # This ensures feedback reflects the evolving internal state after each pass
+            self.valence_128d = valence_128d
+            self.arousal_128d = arousal_128d
             
+ 
             # Create output for this pass
             output = {
                 'valence': valence_out,
@@ -992,21 +975,12 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
             }
             all_outputs.append(output)
             
-            # Store feedback signals for next pass (if not the last pass)
-            if pass_idx < num_passes - 1:
-                # Priority: steering_signals > external_feedback > internal predictions
-                if steering_signals is not None and not first_pass_steering:
-                    # External steering signals will be applied in next pass
-                    # Still store internal feedback for LRM modulation
-                    self._store_feedback_signals(stored_valence_128d, stored_arousal_128d)
-                elif external_feedback is not None:
-                    # Use legacy external feedback if provided
-                    ext_valence_128d = external_feedback.get('valence', stored_valence_128d)
-                    ext_arousal_128d = external_feedback.get('arousal', stored_arousal_128d)
-                    self._store_feedback_signals(ext_valence_128d, ext_arousal_128d)
-                else:
-                    # Use stored internal predictions for consistency (full-length audio approach)
-                    self._store_feedback_signals(stored_valence_128d, stored_arousal_128d)
+     
+            if steering_signals is not None:
+                self._apply_steering_signals_with_current_activations(steering_signals, valence_128d, arousal_128d)
+            else:
+                # Use current internal predictions for next pass (evolving feedback)
+                self._store_feedback_signals(valence_128d, arousal_128d)
         
         # Reset modulation strength if it was adjusted
         if modulation_strength is not None:
@@ -1188,6 +1162,38 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
                 # Apply steering with strength and alpha blending
                 self._inject_steering_activation(lrm_layer_name, activation, strength, alpha)
     
+    def _apply_steering_signals_with_current_activations(self, steering_signals, current_valence_128d, current_arousal_128d):
+        """
+        Apply external steering signals blended with CURRENT pass's internal activations.
+        
+        This fixes the bug where steering was blended with stale internal feedback.
+        Now steering blends with the fresh internal activations from the current pass.
+        
+        Args:
+            steering_signals: list of dicts with format:
+                            [{'source': layer_name, 'activation': tensor, 
+                              'strength': float, 'alpha': float}]
+            current_valence_128d: current pass's valence 128D activation
+            current_arousal_128d: current pass's arousal 128D activation
+        """
+        # Reset modulation strengths to prevent accumulation
+        self.reset_modulation_strengths()
+        
+        for signal_dict in steering_signals:
+            source_layer = signal_dict['source']
+            activation = signal_dict['activation']
+            strength = signal_dict.get('strength', 1.0)
+            alpha = signal_dict.get('alpha', 1.0)  # Blending ratio
+            
+            # Map source layer to our LRM layer names
+            lrm_layer_names = self._map_source_layer_to_lrm(source_layer)
+            if lrm_layer_names:
+                # Apply steering with strength and alpha blending using CURRENT activations
+                self._inject_steering_activation_with_current_activations(
+                    lrm_layer_names, activation, strength, alpha, 
+                    current_valence_128d, current_arousal_128d
+                )
+    
     def _map_source_layer_to_lrm(self, source_layer):
         """
         Map external layer names to internal LRM layer structure.
@@ -1271,6 +1277,78 @@ class FeatureEmotionRegression_Cnn6_LRM(nn.Module):
                             else:
                                 # Set new steering signal
                                 lrm_module.mod_inputs[mod_name] = arousal_4d
+    
+    def _inject_steering_activation_with_current_activations(self, lrm_layer_names, activation, strength, alpha, 
+                                                           current_valence_128d, current_arousal_128d):
+        """
+        Inject steering activation blended with CURRENT pass's internal activations.
+        
+        This fixes the bug where steering was blended with stale internal feedback.
+        Now steering blends with the fresh internal activations from the current pass.
+        
+        Args:
+            lrm_layer_names: list of LRM layer names to inject into
+            activation: external activation tensor
+            strength: steering strength multiplier
+            alpha: blending ratio (1.0 = full external, 0.0 = full internal)
+            current_valence_128d: current pass's valence 128D activation
+            current_arousal_128d: current pass's arousal 128D activation
+        """
+        if not isinstance(lrm_layer_names, list):
+            lrm_layer_names = [lrm_layer_names]
+        
+        # Handle strength parameter (can be float or tuple)
+        if isinstance(strength, (int, float)):
+            neg_scale_adjust, pos_scale_adjust = strength, strength
+        else:
+            neg_scale_adjust, pos_scale_adjust = strength
+        
+        for layer_name in lrm_layer_names:
+            if 'affective_valence_128d' in layer_name:
+                # Convert external activation to 128D valence representation
+                external_valence_128d = self._convert_activation_to_128d(activation, 'valence')
+                # Convert to 4D for conv layer modulation
+                external_valence_4d = external_valence_128d.unsqueeze(-1).unsqueeze(-1)  # (batch, 128, 1, 1)
+                
+                # Convert current internal valence to 4D
+                current_valence_4d = current_valence_128d.unsqueeze(-1).unsqueeze(-1)  # (batch, 128, 1, 1)
+                
+                # Store steering signals in the correct LRM module locations
+                # Find all ModBlocks that use this source
+                pattern = 'from_affective_valence_128d_to_'
+                for lrm_module_name, lrm_module in self.lrm.named_children():
+                    for mod_name, mod_module in lrm_module.named_children():
+                        if pattern in mod_name:
+                            # Apply strength adjustment to the ModBlock parameters
+                            self.adjust_modulation_strengths(mod_module, neg_scale_adjust, pos_scale_adjust)
+                            
+                            # FIXED: Blend external steering with CURRENT internal activation
+                            # This ensures we blend with fresh feedback, not stale feedback
+                            blended_valence_4d = alpha * external_valence_4d + (1 - alpha) * current_valence_4d
+                            lrm_module.mod_inputs[mod_name] = blended_valence_4d
+                
+            elif 'affective_arousal_128d' in layer_name:
+                # Convert external activation to 128D arousal representation
+                external_arousal_128d = self._convert_activation_to_128d(activation, 'arousal')
+                # Convert to 4D for conv layer modulation
+                external_arousal_4d = external_arousal_128d.unsqueeze(-1).unsqueeze(-1)  # (batch, 128, 1, 1)
+                
+                # Convert current internal arousal to 4D
+                current_arousal_4d = current_arousal_128d.unsqueeze(-1).unsqueeze(-1)  # (batch, 128, 1, 1)
+                
+                # Store steering signals in the correct LRM module locations
+                # Find all ModBlocks that use this source
+                pattern = 'from_affective_arousal_128d_to_'
+                for lrm_module_name, lrm_module in self.lrm.named_children():
+                    for mod_name, mod_module in lrm_module.named_children():
+                        if pattern in mod_name:
+                            # Apply strength adjustment to the ModBlock parameters
+                            self.adjust_modulation_strengths(mod_module, neg_scale_adjust, pos_scale_adjust)
+                            
+                            # FIXED: Blend external steering with CURRENT internal activation
+                            # This ensures we blend with fresh feedback, not stale feedback
+                            blended_arousal_4d = alpha * external_arousal_4d + (1 - alpha) * current_arousal_4d
+                            lrm_module.mod_inputs[mod_name] = blended_arousal_4d
     
     def _convert_activation_to_128d(self, activation, emotion_type):
         """

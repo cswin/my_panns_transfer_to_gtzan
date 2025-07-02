@@ -19,8 +19,8 @@ def extract_metrics(log_path):
     return iterations, valence, arousal
 
 # Paths to your log files
-log_no_feedback = "workspaces/emotion_regression/logs/main/FeatureEmotionRegression_Cnn6_NewAffective/pretrain=True/loss_type=mse/augmentation=mixup/batch_size=24/freeze_base=True/0002.log"
-log_intrinsic = "workspaces/emotoin_feedback/logs/main/FeatureEmotionRegression_Cnn6_LRM/pretrain=True/loss_type=mse/augmentation=mixup/batch_size=24/freeze_base=True/0008.log"
+log_no_feedback = "workspaces/emotion_regression/logs/main/FeatureEmotionRegression_Cnn6_NewAffective/pretrain=True/loss_type=mse/augmentation=mixup/batch_size=16/freeze_base=True/0019.log"
+log_intrinsic = "workspaces/emotoin_feedback/logs/main/FeatureEmotionRegression_Cnn6_LRM/pretrain=True/loss_type=mse/augmentation=mixup/batch_size=16/freeze_base=True/0008.log"
 
  
 
@@ -50,4 +50,6 @@ plt.legend()
 plt.grid(True)
 
 plt.tight_layout()
+# Save the figure
+plt.savefig('workspaces/NoFeedback_IntrinsicFB_training_iteration_performance.png')
 plt.show() 
